@@ -24,7 +24,7 @@
   "devDependencies": {
     "@capacitor/cli": "^6.2.1",
     "electron": "^35.7.5",
-    "electron-builder": "^24.13.3"
+    "electron-builder": "^26.15.3"
   },
   "dependencies": {
     "@capacitor-community/http": "^1.4.1",

@@ -45,8 +45,6 @@ jobs:
           cache: npm
       - name: Install deps
         run: npm ci
-      - name: Ensure electron-builder installed
-        run: npm i -D electron-builder@^24
       - name: Build .deb and linux tar.gz (no publish)
         run: npx electron-builder --publish=never --config electron-builder.yml --linux deb tar.gz
       - name: Create README_INSTALL for tarballs
@@ -78,8 +76,6 @@ jobs:
           cache: npm
       - name: Install deps
         run: npm ci
-      - name: Ensure electron-builder installed
-        run: npm i -D electron-builder@^24
       - name: Build NSIS .exe installer (no publish)
         run: npx electron-builder --publish=never --config electron-builder.yml --win nsis
       - name: Collect artifacts
