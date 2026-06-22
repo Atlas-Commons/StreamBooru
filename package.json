@@ -22,7 +22,7 @@
     "test:server": "node scripts/test-server-smoke.js"
   },
   "devDependencies": {
-    "@capacitor/cli": "^6.2.1",
+    "@capacitor/cli": "^8.4.0",
     "electron": "^35.7.5",
     "electron-builder": "^26.15.3"
   },

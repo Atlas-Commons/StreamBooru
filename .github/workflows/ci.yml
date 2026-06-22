@@ -26,6 +26,8 @@ jobs:
       - run: npm ci
       - run: npm run test:server
       - run: npm run test:tags
+      - run: npx cap sync android
+      - run: npm run pack
 
   dco:
     name: DCO sign-off
