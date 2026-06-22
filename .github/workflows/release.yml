@@ -34,6 +34,7 @@ jobs:
           echo "repo=${GITHUB_REPOSITORY##*/}" >> "$GITHUB_OUTPUT"
 
   linux-deb-and-tar:
+    if: contains(github.server_url, 'github.com')
     needs: prep
     runs-on: ubuntu-latest
     steps:
@@ -65,7 +66,7 @@ jobs:
           path: release-linux
 
   windows-exe:
-    if: startsWith(github.ref, 'refs/tags/')
+    if: contains(github.server_url, 'github.com') && startsWith(github.ref, 'refs/tags/')
     continue-on-error: true
     needs: prep
     runs-on: windows-2025
@@ -96,7 +97,7 @@ jobs:
           path: release-win
 
   flatpak:
-    if: startsWith(github.ref, 'refs/tags/')
+    if: contains(github.server_url, 'github.com') && startsWith(github.ref, 'refs/tags/')
     continue-on-error: true
     needs: prep
     runs-on: ubuntu-latest
@@ -139,6 +140,7 @@ jobs:
           path: release-flatpak
 
   android:
+    if: contains(github.server_url, 'github.com')
     continue-on-error: true
     needs: prep
     runs-on: ubuntu-latest
@@ -255,7 +257,7 @@ jobs:
           retention-days: 14
 
   create-release:
-    if: startsWith(github.ref, 'refs/tags/')
+    if: contains(github.server_url, 'github.com') && startsWith(github.ref, 'refs/tags/')
     needs: [prep, linux-deb-and-tar, windows-exe, flatpak, android]
     runs-on: ubuntu-latest
     steps:
@@ -381,7 +383,7 @@ jobs:
             artifacts/android-apk/*.apk
 
   aur-stable:
-    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+    if: contains(github.server_url, 'github.com') && startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
     needs: [prep, create-release]
     runs-on: ubuntu-latest
     env:
