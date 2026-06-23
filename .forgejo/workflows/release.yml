@@ -1,4 +1,4 @@
-name: Release (deb, exe, flatpak, tar.gz, AUR)
+name: Release (Forgejo)
 
 on:
   push:

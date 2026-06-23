@@ -1,6 +1,6 @@
 name: Release (deb, exe, flatpak, tar.gz, AUR) — GitHub mirror
 
-# Primary release pipeline: release.forgejo.yml on git.atlastechsolutions.co.uk
+# Primary release pipeline: .forgejo/workflows/release.yml on git.atlastechsolutions.co.uk
 
 on:
   push:
