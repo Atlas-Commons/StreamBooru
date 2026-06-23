@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, oss-governance-updates]
+    branches: [main]
   pull_request:
-    branches: [main, oss-governance-updates]
+    branches: [main]
 
 permissions:
   contents: read

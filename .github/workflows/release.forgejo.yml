@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - oss-governance-updates
     tags:
       - "v*.*.*"
       - "v*.*.*-*"
@@ -84,7 +83,7 @@ jobs:
           path: release-linux
 
   windows-exe:
-    if: contains(github.server_url, 'git.atlastechsolutions.co.uk') && startsWith(github.ref, 'refs/tags/')
+    if: contains(github.server_url, 'git.atlastechsolutions.co.uk')
     continue-on-error: true
     needs: prep
     runs-on: ubuntu-latest
@@ -126,7 +125,7 @@ jobs:
           path: release-win
 
   flatpak:
-    if: contains(github.server_url, 'git.atlastechsolutions.co.uk') && startsWith(github.ref, 'refs/tags/')
+    if: contains(github.server_url, 'git.atlastechsolutions.co.uk')
     continue-on-error: true
     needs: prep
     runs-on: ubuntu-latest
@@ -167,7 +166,7 @@ jobs:
           path: release-flatpak
 
   android:
-    if: contains(github.server_url, 'git.atlastechsolutions.co.uk') && startsWith(github.ref, 'refs/tags/')
+    if: contains(github.server_url, 'git.atlastechsolutions.co.uk')
     continue-on-error: true
     needs: prep
     runs-on: ubuntu-latest
