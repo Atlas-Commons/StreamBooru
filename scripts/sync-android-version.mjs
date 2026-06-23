@@ -19,8 +19,10 @@ function readPackageVersion() {
 }
 
 function resolveVersion() {
-  const fromEnv = String(process.env.RELEASE_VERSION || process.env.GITHUB_REF_NAME || '').trim();
+  const fromEnv = String(process.env.RELEASE_VERSION || '').trim();
   if (fromEnv) return fromEnv.replace(/^v/, '');
+  const refName = String(process.env.GITHUB_REF_NAME || '').trim();
+  if (refName && /^v?\d+\.\d+\.\d+/.test(refName)) return refName.replace(/^v/, '');
   return readPackageVersion();
 }
 

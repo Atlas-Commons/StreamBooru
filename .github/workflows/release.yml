@@ -28,13 +28,17 @@ jobs:
       - uses: actions/checkout@v5
       - id: meta
         run: |
-          REF="${GITHUB_REF##*/}"
-          echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            REF="${GITHUB_REF##*/}"
+            VERSION="${REF#v}"
+          else
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "owner=${GITHUB_REPOSITORY%%/*}" >> "$GITHUB_OUTPUT"
           echo "repo=${GITHUB_REPOSITORY##*/}" >> "$GITHUB_OUTPUT"
 
   linux-deb-and-tar:
-    if: contains(github.server_url, 'github.com')
     needs: prep
     runs-on: ubuntu-latest
     steps:
@@ -66,10 +70,10 @@ jobs:
           path: release-linux
 
   windows-exe:
-    if: contains(github.server_url, 'github.com') && startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/')
     continue-on-error: true
     needs: prep
-    runs-on: windows-2025
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - name: Setup Node
@@ -81,10 +85,19 @@ jobs:
         run: npm ci
       - name: Ensure electron-builder installed
         run: npm i -D electron-builder@^24
+      - name: Install Wine and NSIS (cross-build .exe on Linux)
+        run: |
+          set -euo pipefail
+          if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=""; fi
+          export DEBIAN_FRONTEND=noninteractive
+          $SUDO dpkg --add-architecture i386 2>/dev/null || true
+          $SUDO apt-get update -qq
+          $SUDO apt-get install -y -qq wine64 wine32 nsis
       - name: Build NSIS .exe installer (no publish)
+        env:
+          USE_SYSTEM_NSIS: "true"
         run: npx electron-builder --publish=never --config electron-builder.yml --win nsis
       - name: Collect artifacts
-        shell: bash
         run: |
           mkdir -p release-win
           shopt -s nullglob
@@ -97,7 +110,7 @@ jobs:
           path: release-win
 
   flatpak:
-    if: contains(github.server_url, 'github.com') && startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/')
     continue-on-error: true
     needs: prep
     runs-on: ubuntu-latest
@@ -140,7 +153,6 @@ jobs:
           path: release-flatpak
 
   android:
-    if: contains(github.server_url, 'github.com')
     continue-on-error: true
     needs: prep
     runs-on: ubuntu-latest
@@ -257,7 +269,7 @@ jobs:
           retention-days: 14
 
   create-release:
-    if: contains(github.server_url, 'github.com') && startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/')
     needs: [prep, linux-deb-and-tar, windows-exe, flatpak, android]
     runs-on: ubuntu-latest
     steps:
@@ -292,6 +304,7 @@ jobs:
 
       - name: Generate GitHub release notes
         id: ghnotes
+        if: contains(github.server_url, 'github.com')
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -350,6 +363,8 @@ jobs:
       - name: Create/Update GitHub Release
         if: steps.body.outputs.found == 'true'
         uses: softprops/action-gh-release@v3
+        env:
+          GITHUB_API_URL: ${{ contains(github.server_url, 'github.com') && 'https://api.github.com' || format('{0}/api/v1', github.server_url) }}
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
@@ -368,6 +383,8 @@ jobs:
       - name: Create/Update GitHub Release (auto-generated notes only)
         if: steps.body.outputs.found != 'true'
         uses: softprops/action-gh-release@v3
+        env:
+          GITHUB_API_URL: ${{ contains(github.server_url, 'github.com') && 'https://api.github.com' || format('{0}/api/v1', github.server_url) }}
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
@@ -383,7 +400,7 @@ jobs:
             artifacts/android-apk/*.apk
 
   aur-stable:
-    if: contains(github.server_url, 'github.com') && startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
     needs: [prep, create-release]
     runs-on: ubuntu-latest
     env:
@@ -428,7 +445,7 @@ jobs:
           ssh_keyscan_types: rsa,ecdsa,ed25519
 
   aur-beta:
-    if: contains(github.server_url, 'github.com') && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-')
+    if: startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-')
     needs: [prep, create-release]
     runs-on: ubuntu-latest
     env:
