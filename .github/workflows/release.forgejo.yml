@@ -1,0 +1,29 @@
+name: Release validate
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "v*.*.*-*"
+      - "v*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate release build
+    if: contains(github.server_url, 'git.atlastechsolutions.co.uk')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+      - name: Setup Node
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq nodejs npm
+      - run: npm ci
+      - run: npm run test:server
+      - run: npm run test:tags

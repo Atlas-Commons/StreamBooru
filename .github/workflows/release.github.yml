@@ -19,6 +19,7 @@ env:
 
 jobs:
   prep:
+    if: contains(github.server_url, 'github.com')
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.meta.outputs.version }}
@@ -39,6 +40,7 @@ jobs:
           echo "repo=${GITHUB_REPOSITORY##*/}" >> "$GITHUB_OUTPUT"
 
   linux-deb-and-tar:
+    if: contains(github.server_url, 'github.com')
     needs: prep
     runs-on: ubuntu-latest
     steps:
@@ -154,6 +156,7 @@ jobs:
           path: release-flatpak
 
   android:
+    if: contains(github.server_url, 'github.com')
     continue-on-error: true
     needs: prep
     runs-on: ubuntu-latest

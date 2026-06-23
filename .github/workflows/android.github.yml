@@ -8,6 +8,7 @@ on:
 
 jobs:
   build-android:
+    if: contains(github.server_url, 'github.com')
     runs-on: ubuntu-latest
 
     steps:

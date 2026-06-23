@@ -10,31 +10,33 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-forgejo-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
     name: Test (npm smoke)
+    if: contains(github.server_url, 'git.atlastechsolutions.co.uk')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: https://github.com/actions/checkout@v4
         with:
           token: ${{ secrets.FORGEJO_TOKEN }}
-      - uses: https://github.com/actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
+      - name: Setup Node
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq nodejs npm
       - run: npm ci
       - run: npm run test:server
       - run: npm run test:tags
 
   dco:
     name: DCO sign-off
+    if: contains(github.server_url, 'git.atlastechsolutions.co.uk') && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: https://github.com/actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.FORGEJO_TOKEN }}
@@ -42,9 +44,9 @@ jobs:
 
   required:
     name: Required checks
+    if: always() && contains(github.server_url, 'git.atlastechsolutions.co.uk')
     runs-on: ubuntu-latest
     needs: [test, dco]
-    if: always()
     steps:
       - run: |
           if [[ "${{ needs.test.result }}" != "success" ]]; then exit 1; fi

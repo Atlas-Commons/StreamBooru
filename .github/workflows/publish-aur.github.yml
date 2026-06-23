@@ -21,6 +21,7 @@ permissions:
 
 jobs:
   aur:
+    if: contains(github.server_url, 'github.com')
     runs-on: ubuntu-latest
     env:
       AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
