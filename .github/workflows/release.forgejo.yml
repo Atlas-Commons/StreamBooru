@@ -1,29 +1,437 @@
-name: Release validate
+name: Release (deb, exe, flatpak, tar.gz, AUR)
 
 on:
   push:
+    branches:
+      - main
+      - oss-governance-updates
     tags:
       - "v*.*.*"
       - "v*.*.*-*"
       - "v*.*"
+  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+env:
+  APP_ID: io.streambooru.StreamBooru
+  APP_NAME: StreamBooru
 
 jobs:
-  validate:
-    name: Validate release build
+  prep:
     if: contains(github.server_url, 'git.atlastechsolutions.co.uk')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      owner: ${{ steps.meta.outputs.owner }}
+      repo: ${{ steps.meta.outputs.repo }}
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+      - name: Setup Node 24
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq ca-certificates curl gnupg
+          curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+          apt-get install -y -qq nodejs
+      - id: meta
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            REF="${GITHUB_REF##*/}"
+            VERSION="${REF#v}"
+          else
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "owner=${GITHUB_REPOSITORY%%/*}" >> "$GITHUB_OUTPUT"
+          echo "repo=${GITHUB_REPOSITORY##*/}" >> "$GITHUB_OUTPUT"
+
+  linux-deb-and-tar:
+    if: contains(github.server_url, 'git.atlastechsolutions.co.uk')
+    needs: prep
     runs-on: ubuntu-latest
     steps:
       - uses: https://github.com/actions/checkout@v4
         with:
           token: ${{ secrets.FORGEJO_TOKEN }}
-      - name: Setup Node
+      - name: Setup Node 24
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq ca-certificates curl gnupg
+          curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+          apt-get install -y -qq nodejs
+      - run: npm ci
+      - run: npm i -D electron-builder@^24
+      - run: npx electron-builder --publish=never --config electron-builder.yml --linux deb tar.gz
+      - run: cp docs/INSTALL.md dist/INSTALL.md || true
+      - name: Collect artifacts
+        run: |
+          mkdir -p release-linux
+          shopt -s nullglob
+          cp dist/*.deb release-linux/ || true
+          cp dist/*.tar.gz release-linux/ || true
+          cp dist/INSTALL.md release-linux/ || true
+          ls -la release-linux
+      - uses: https://github.com/actions/upload-artifact@v3
+        with:
+          name: linux
+          path: release-linux
+
+  windows-exe:
+    if: contains(github.server_url, 'git.atlastechsolutions.co.uk') && startsWith(github.ref, 'refs/tags/')
+    continue-on-error: true
+    needs: prep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+      - name: Setup Node 24
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq ca-certificates curl gnupg
+          curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+          apt-get install -y -qq nodejs
+      - run: npm ci
+      - run: npm i -D electron-builder@^24
+      - name: Install Wine and NSIS
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          dpkg --add-architecture i386 2>/dev/null || true
+          apt-get update -qq
+          apt-get install -y -qq wine64 wine32 nsis
+      - name: Build NSIS .exe installer
+        env:
+          USE_SYSTEM_NSIS: "true"
+        run: npx electron-builder --publish=never --config electron-builder.yml --win nsis
+      - name: Collect artifacts
+        run: |
+          mkdir -p release-win
+          shopt -s nullglob
+          cp dist/*.exe release-win/ || true
+          cp docs/INSTALL.md release-win/INSTALL.md || true
+          ls -la release-win
+      - uses: https://github.com/actions/upload-artifact@v3
+        with:
+          name: windows
+          path: release-win
+
+  flatpak:
+    if: contains(github.server_url, 'git.atlastechsolutions.co.uk') && startsWith(github.ref, 'refs/tags/')
+    continue-on-error: true
+    needs: prep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+      - name: Setup Node 24
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq ca-certificates curl gnupg
+          curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+          apt-get install -y -qq nodejs
+      - run: npm ci
+      - name: Install Flatpak tooling
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq
-          apt-get install -y -qq nodejs npm
+          apt-get install -y -qq flatpak flatpak-builder
+          flatpak --user remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak --user install -y --noninteractive flathub \
+            org.freedesktop.Platform//24.08 \
+            org.freedesktop.Sdk//24.08 \
+            org.electronjs.Electron2.BaseApp//24.08
+      - run: npx electron-builder --publish=never --config electron-builder.yml --linux flatpak
+      - name: Collect artifacts
+        run: |
+          mkdir -p release-flatpak
+          find dist -maxdepth 1 -name '*.flatpak' -exec cp -v {} release-flatpak/ \;
+          cp docs/INSTALL.md release-flatpak/INSTALL.md 2>/dev/null || cp INSTALL.md release-flatpak/INSTALL.md 2>/dev/null || true
+          ls -la release-flatpak
+          test "$(find release-flatpak -maxdepth 1 -name '*.flatpak' | wc -l)" -gt 0
+      - uses: https://github.com/actions/upload-artifact@v3
+        with:
+          name: flatpak
+          path: release-flatpak
+
+  android:
+    if: contains(github.server_url, 'git.atlastechsolutions.co.uk') && startsWith(github.ref, 'refs/tags/')
+    continue-on-error: true
+    needs: prep
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ needs.prep.outputs.version }}
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+      - name: Setup Node 24
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq ca-certificates curl gnupg
+          curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+          apt-get install -y -qq nodejs
       - run: npm ci
-      - run: npm run test:server
-      - run: npm run test:tags
+      - run: node scripts/sync-android-version.mjs
+      - name: Add and sync Capacitor Android
+        run: |
+          npx cap sync
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
+          npx cap sync android
+      - name: Setup Java 17
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq openjdk-17-jdk
+          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> "$GITHUB_ENV"
+      - name: Make Gradle wrapper executable
+        working-directory: android
+        run: chmod +x gradlew
+      - name: Decode keystore
+        run: |
+          if [ -n "${ANDROID_KEYSTORE_BASE64}" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/keystore.p12
+          else
+            echo "ANDROID_KEYSTORE_BASE64 not set; skipping keystore decode"
+          fi
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      - name: Build signed release
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PATH: keystore.p12
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "${ANDROID_KEYSTORE_BASE64}" ]; then
+            ./gradlew clean
+            ./gradlew \
+              bundleRelease \
+              assembleRelease \
+              -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/android/$KEYSTORE_PATH \
+              -Pandroid.injected.signing.store.password=$KEYSTORE_PASSWORD \
+              -Pandroid.injected.signing.store.type=PKCS12 \
+              -Pandroid.injected.signing.key.alias=$KEY_ALIAS \
+              -Pandroid.injected.signing.key.password=$KEY_PASSWORD
+          else
+            echo "No keystore secret; skipping signed release build"
+          fi
+      - name: Prepare Android artifacts
+        run: |
+          set -e
+          mkdir -p out-apk out-aab
+          APK_BASENAME="$(grep '^APK_BASENAME=' android/version.properties | cut -d= -f2-)"
+          if [ -z "$APK_BASENAME" ]; then APK_BASENAME="streambooru"; fi
+          if compgen -G "android/app/build/outputs/apk/release/*.apk" > /dev/null; then
+            cp android/app/build/outputs/apk/release/*.apk "out-apk/${APK_BASENAME}.apk"
+          fi
+          if compgen -G "android/app/build/outputs/bundle/release/*.aab" > /dev/null; then
+            cp android/app/build/outputs/bundle/release/*.aab out-aab/
+          fi
+      - uses: https://github.com/actions/upload-artifact@v3
+        if: hashFiles('out-apk/*.apk') != ''
+        with:
+          name: android-apk
+          path: out-apk/*.apk
+          if-no-files-found: warn
+      - uses: https://github.com/actions/upload-artifact@v3
+        if: hashFiles('out-aab/*.aab') != ''
+        with:
+          name: android-aab
+          path: out-aab/*.aab
+          if-no-files-found: ignore
+
+  create-release:
+    if: contains(github.server_url, 'git.atlastechsolutions.co.uk') && startsWith(github.ref, 'refs/tags/')
+    needs: [prep, linux-deb-and-tar, windows-exe, flatpak, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.FORGEJO_TOKEN }}
+      - uses: https://github.com/actions/download-artifact@v3
+        with:
+          path: ./artifacts
+      - run: find ./artifacts -type f -maxdepth 3 -print || true
+      - name: Setup Node 24
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq ca-certificates curl gnupg
+          curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+          apt-get install -y -qq nodejs
+      - name: Extract release notes from CHANGELOG.md
+        id: extract
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          node ./scripts/extract-changelog.mjs "$TAG" "./CHANGELOG.md" "./CHANGELOG_RELEASE.md" || true
+          if [ ! -s "./CHANGELOG_RELEASE.md" ] && [ -f "./docs/CHANGELOG.md" ]; then
+            node ./scripts/extract-changelog.mjs "$TAG" "./docs/CHANGELOG.md" "./CHANGELOG_RELEASE.md" || true
+          fi
+      - name: Build combined release body
+        id: body
+        run: |
+          set -euo pipefail
+          : > GITHUB_NOTES.md
+          node ./scripts/build-release-notes.mjs "./RELEASE_BODY.md" "./CHANGELOG_RELEASE.md" "./GITHUB_NOTES.md"
+          if [ -s "./RELEASE_BODY.md" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "notes_path=RELEASE_BODY.md" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Detect pre-release tag
+        id: flags
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-.+ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create Forgejo release (with changelog body)
+        if: steps.body.outputs.found == 'true'
+        uses: https://github.com/softprops/action-gh-release@v2
+        env:
+          GITHUB_API_URL: ${{ format('{0}/api/v1', github.server_url) }}
+          GITHUB_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: ${{ steps.body.outputs.notes_path }}
+          generate_release_notes: false
+          prerelease: ${{ steps.flags.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.flags.outputs.prerelease != 'true' }}
+          overwrite_files: true
+          fail_on_unmatched_files: false
+          files: |
+            artifacts/linux/**
+            artifacts/windows/**
+            artifacts/flatpak/**
+            artifacts/android-apk/*.apk
+      - name: Create Forgejo release (tag only)
+        if: steps.body.outputs.found != 'true'
+        uses: https://github.com/softprops/action-gh-release@v2
+        env:
+          GITHUB_API_URL: ${{ format('{0}/api/v1', github.server_url) }}
+          GITHUB_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: false
+          prerelease: ${{ steps.flags.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.flags.outputs.prerelease != 'true' }}
+          overwrite_files: true
+          fail_on_unmatched_files: false
+          files: |
+            artifacts/linux/**
+            artifacts/windows/**
+            artifacts/flatpak/**
+            artifacts/android-apk/*.apk
+
+  aur-stable:
+    if: contains(github.server_url, 'git.atlastechsolutions.co.uk') && startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+    needs: [prep, create-release]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.prep.outputs.version }}
+      OWNER: ${{ needs.prep.outputs.owner }}
+      REPO: ${{ needs.prep.outputs.repo }}
+      AUR_PACKAGE: ${{ secrets.AUR_PACKAGE }}
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+      AUR_USERNAME: ${{ secrets.AUR_USERNAME }}
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+      - name: Check AUR secrets
+        id: check
+        run: |
+          publish=true
+          if [ -z "${AUR_SSH_PRIVATE_KEY}" ] || [ -z "${AUR_USERNAME}" ] || [ -z "${AUR_PACKAGE}" ]; then
+            publish=false
+          fi
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+      - name: Generate and publish stable AUR package
+        if: steps.check.outputs.publish == 'true'
+        run: |
+          chmod +x scripts/publish-aur.sh
+          ./scripts/publish-aur.sh "${VERSION}" "${OWNER}" "${REPO}" "${AUR_PACKAGE}" "'streambooru' 'streambooru-bin-beta'"
+      - name: Publish to AUR
+        if: steps.check.outputs.publish == 'true'
+        uses: https://github.com/KSXGitHub/github-actions-deploy-aur@v2.7.1
+        with:
+          pkgname: ${{ secrets.AUR_PACKAGE }}
+          pkgbuild: aur-out/PKGBUILD
+          assets: |
+            aur-out/.SRCINFO
+            aur/streambooru.sh
+            aur/streambooru.desktop
+          commit_username: "forgejo-actions"
+          commit_email: "actions@git.atlastechsolutions.co.uk"
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          ssh_keyscan_types: rsa,ecdsa,ed25519
+
+  aur-beta:
+    if: contains(github.server_url, 'git.atlastechsolutions.co.uk') && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-')
+    needs: [prep, create-release]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.prep.outputs.version }}
+      OWNER: ${{ needs.prep.outputs.owner }}
+      REPO: ${{ needs.prep.outputs.repo }}
+      AUR_PACKAGE_BETA: ${{ secrets.AUR_PACKAGE_BETA }}
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+      AUR_USERNAME: ${{ secrets.AUR_USERNAME }}
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+        with:
+          token: ${{ secrets.FORGEJO_TOKEN }}
+      - name: Check AUR beta secrets
+        id: check
+        run: |
+          publish=true
+          if [ -z "${AUR_SSH_PRIVATE_KEY}" ] || [ -z "${AUR_USERNAME}" ] || [ -z "${AUR_PACKAGE_BETA}" ]; then
+            publish=false
+          fi
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+      - name: Generate and publish beta AUR package
+        if: steps.check.outputs.publish == 'true'
+        run: |
+          chmod +x scripts/publish-aur.sh
+          ./scripts/publish-aur.sh "${VERSION}" "${OWNER}" "${REPO}" "${AUR_PACKAGE_BETA}" "'streambooru' 'streambooru-bin'" " (pre-release)"
+      - name: Publish to AUR
+        if: steps.check.outputs.publish == 'true'
+        uses: https://github.com/KSXGitHub/github-actions-deploy-aur@v2.7.1
+        with:
+          pkgname: ${{ secrets.AUR_PACKAGE_BETA }}
+          pkgbuild: aur-out/PKGBUILD
+          assets: |
+            aur-out/.SRCINFO
+            aur/streambooru.sh
+            aur/streambooru.desktop
+          commit_username: "forgejo-actions"
+          commit_email: "actions@git.atlastechsolutions.co.uk"
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          ssh_keyscan_types: rsa,ecdsa,ed25519

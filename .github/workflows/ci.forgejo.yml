@@ -22,11 +22,14 @@ jobs:
       - uses: https://github.com/actions/checkout@v4
         with:
           token: ${{ secrets.FORGEJO_TOKEN }}
-      - name: Setup Node
+      - name: Setup Node 24
         run: |
+          set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq
-          apt-get install -y -qq nodejs npm
+          apt-get install -y -qq ca-certificates curl gnupg
+          curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+          apt-get install -y -qq nodejs
       - run: npm ci
       - run: npm run test:server
       - run: npm run test:tags
