@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 env:
   APP_ID: io.streambooru.StreamBooru
@@ -81,6 +82,21 @@ jobs:
         with:
           name: linux
           path: release-linux
+      - name: Publish to Forgejo Packages
+        if: github.event_name == 'push'
+        env:
+          FORGEJO_USERNAME: ${{ secrets.FORGEJO_USERNAME }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          VER="${{ needs.prep.outputs.version }}"
+          if [[ "${GITHUB_REF}" != refs/tags/* ]]; then
+            VER="${VER}.dev${GITHUB_RUN_NUMBER}"
+          fi
+          mapfile -t FILES < <(find release-linux -maxdepth 1 -type f | sort)
+          if ((${#FILES[@]} == 0)); then exit 0; fi
+          bash scripts/ci/forgejo-packages.sh generic \
+            "${{ needs.prep.outputs.owner }}" streambooru-linux "$VER" \
+            "${{ needs.prep.outputs.repo }}" "${FILES[@]}"
 
   windows-exe:
     if: contains(github.server_url, 'git.atlastechsolutions.co.uk')
@@ -123,6 +139,21 @@ jobs:
         with:
           name: windows
           path: release-win
+      - name: Publish to Forgejo Packages
+        if: github.event_name == 'push'
+        env:
+          FORGEJO_USERNAME: ${{ secrets.FORGEJO_USERNAME }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          VER="${{ needs.prep.outputs.version }}"
+          if [[ "${GITHUB_REF}" != refs/tags/* ]]; then
+            VER="${VER}.dev${GITHUB_RUN_NUMBER}"
+          fi
+          mapfile -t FILES < <(find release-win -maxdepth 1 -type f | sort)
+          if ((${#FILES[@]} == 0)); then exit 0; fi
+          bash scripts/ci/forgejo-packages.sh generic \
+            "${{ needs.prep.outputs.owner }}" streambooru-windows "$VER" \
+            "${{ needs.prep.outputs.repo }}" "${FILES[@]}"
 
   flatpak:
     if: contains(github.server_url, 'git.atlastechsolutions.co.uk')
@@ -164,6 +195,21 @@ jobs:
         with:
           name: flatpak
           path: release-flatpak
+      - name: Publish to Forgejo Packages
+        if: github.event_name == 'push'
+        env:
+          FORGEJO_USERNAME: ${{ secrets.FORGEJO_USERNAME }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          VER="${{ needs.prep.outputs.version }}"
+          if [[ "${GITHUB_REF}" != refs/tags/* ]]; then
+            VER="${VER}.dev${GITHUB_RUN_NUMBER}"
+          fi
+          mapfile -t FILES < <(find release-flatpak -maxdepth 1 -type f | sort)
+          if ((${#FILES[@]} == 0)); then exit 0; fi
+          bash scripts/ci/forgejo-packages.sh generic \
+            "${{ needs.prep.outputs.owner }}" streambooru-flatpak "$VER" \
+            "${{ needs.prep.outputs.repo }}" "${FILES[@]}"
 
   android:
     if: contains(github.server_url, 'git.atlastechsolutions.co.uk')
@@ -257,6 +303,34 @@ jobs:
           name: android-aab
           path: out-aab/*.aab
           if-no-files-found: ignore
+      - name: Publish Android APK to Forgejo Packages
+        if: github.event_name == 'push' && hashFiles('out-apk/*.apk') != ''
+        env:
+          FORGEJO_USERNAME: ${{ secrets.FORGEJO_USERNAME }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          VER="${{ needs.prep.outputs.version }}"
+          if [[ "${GITHUB_REF}" != refs/tags/* ]]; then
+            VER="${VER}.dev${GITHUB_RUN_NUMBER}"
+          fi
+          mapfile -t FILES < <(find out-apk -maxdepth 1 -name '*.apk' -type f | sort)
+          bash scripts/ci/forgejo-packages.sh generic \
+            "${{ needs.prep.outputs.owner }}" streambooru-android-apk "$VER" \
+            "${{ needs.prep.outputs.repo }}" "${FILES[@]}"
+      - name: Publish Android AAB to Forgejo Packages
+        if: github.event_name == 'push' && hashFiles('out-aab/*.aab') != ''
+        env:
+          FORGEJO_USERNAME: ${{ secrets.FORGEJO_USERNAME }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          VER="${{ needs.prep.outputs.version }}"
+          if [[ "${GITHUB_REF}" != refs/tags/* ]]; then
+            VER="${VER}.dev${GITHUB_RUN_NUMBER}"
+          fi
+          mapfile -t FILES < <(find out-aab -maxdepth 1 -name '*.aab' -type f | sort)
+          bash scripts/ci/forgejo-packages.sh generic \
+            "${{ needs.prep.outputs.owner }}" streambooru-android-aab "$VER" \
+            "${{ needs.prep.outputs.repo }}" "${FILES[@]}"
 
   create-release:
     if: contains(github.server_url, 'git.atlastechsolutions.co.uk') && startsWith(github.ref, 'refs/tags/')
