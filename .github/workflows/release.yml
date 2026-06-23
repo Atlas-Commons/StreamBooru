@@ -428,7 +428,7 @@ jobs:
           ssh_keyscan_types: rsa,ecdsa,ed25519
 
   aur-beta:
-    if: startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-')
+    if: contains(github.server_url, 'github.com') && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-')
     needs: [prep, create-release]
     runs-on: ubuntu-latest
     env:
