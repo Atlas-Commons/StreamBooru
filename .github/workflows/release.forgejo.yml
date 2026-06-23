@@ -160,6 +160,9 @@ jobs:
     continue-on-error: true
     needs: prep
     runs-on: ubuntu-latest
+    # flatpak-builder uses bwrap; nested act job containers need unconfined seccomp.
+    container:
+      options: --security-opt seccomp=unconfined --security-opt apparmor=unconfined
     steps:
       - uses: https://github.com/actions/checkout@v4
         with:
@@ -239,6 +242,8 @@ jobs:
             npx cap add android
           fi
           npx cap sync android
+      - name: Setup Android SDK
+        run: bash scripts/ci/setup-android-sdk.sh
       - name: Setup Java 17
         run: |
           export DEBIAN_FRONTEND=noninteractive
