@@ -291,6 +291,31 @@ window.getFileNameForPost = (post, index=0) =>
   buildFileNameFromTemplate(post, index, state.nameTemplate || '{site}-{id}');
 
 // ---------- render helpers ----------
+function updateFeedHeader() {
+  const title = document.getElementById('view-title');
+  const description = document.getElementById('view-description');
+  const count = document.getElementById('result-count');
+  const refresh = document.getElementById('btn-refresh-feed');
+  if (!title || !description || !count) return;
+
+  const sourceCount = (state.config?.sites || []).filter((site) => site?.baseUrl && site?.type).length;
+  const copy = {
+    new: ['New', `Latest posts across ${sourceCount || 'your'} configured source${sourceCount === 1 ? '' : 's'}`],
+    popular: ['Popular', 'High-scoring posts from across your sources'],
+    search: ['Search', state.search ? `Results for “${state.search}”` : 'Gelbooru syntax is translated for compatible sources'],
+    faves: ['Favourites', 'Everything you have saved, in one place']
+  }[state.viewType] || ['Browse', 'Explore your configured sources'];
+
+  title.textContent = copy[0];
+  description.textContent = copy[1];
+  const total = state.items.length;
+  count.textContent = `${total.toLocaleString()} post${total === 1 ? '' : 's'}${state.loading ? ' · Updating…' : ''}`;
+  if (refresh) {
+    refresh.disabled = state.loading;
+    refresh.setAttribute('aria-busy', String(state.loading));
+  }
+}
+
 function ensureScrollSentinel() {
   const feed = document.getElementById('feed');
   if (!feed) return null;
@@ -315,9 +340,10 @@ function observeSentinel() {
 
 function renderAppend() {
   const feed = document.getElementById('feed');
-  const start = feed.childElementCount;
+  const start = feed.querySelectorAll(':scope > .card').length;
   for (let i = start; i < state.items.length; i++) feed.appendChild(window.PostCard(state.items[i], i));
   ensureScrollSentinel(); observeSentinel();
+  updateFeedHeader();
 }
 function renderReplacePreserveScroll() {
   const feed = document.getElementById('feed');
@@ -338,6 +364,7 @@ function renderReplacePreserveScroll() {
     }
   }
   ensureScrollSentinel(); observeSentinel();
+  updateFeedHeader();
 }
 function renderReplaceNoPreserve() {
   const feed = document.getElementById('feed');
@@ -345,6 +372,7 @@ function renderReplaceNoPreserve() {
   window.getGalleryItems = () => state.items;
   for (let i=0;i<state.items.length;i++) feed.appendChild(window.PostCard(state.items[i], i));
   ensureScrollSentinel(); observeSentinel();
+  updateFeedHeader();
 }
 window.getGalleryItems = () => state.items;
 
@@ -473,6 +501,7 @@ async function fetchBatch() {
 
   const gen = state.fetchGen;
   state.loading = true; loadingEl.classList.remove('hidden'); loadingEl.textContent = 'Loading…';
+  updateFeedHeader();
 
   if (state.viewType === 'faves') {
     const all = await window.api.getLocalFavorites();
@@ -482,13 +511,14 @@ async function fetchBatch() {
     scrollToTop();
     loadingEl.classList.add('hidden');
     state.loading = false;
+    updateFeedHeader();
     saveViewCache();
     if (state.pendingFetch) { state.pendingFetch = false; fetchBatch(); }
     return;
   }
 
   const sites = (state.config.sites || []).filter((s)=> s.baseUrl && s.type);
-  if (sites.length === 0) { loadingEl.textContent = 'No sites configured. Click Manage Sites to add.'; state.loading = false; return; }
+  if (sites.length === 0) { loadingEl.textContent = 'No sites configured. Open Sites to add one.'; state.loading = false; updateFeedHeader(); return; }
 
   const doSearch = state.viewType === 'search' && (state.search || '').trim().length > 0;
   const isPopular = state.viewType === 'popular';
@@ -515,7 +545,7 @@ async function fetchBatch() {
   });
 
   let results; try { results = await Promise.allSettled(reqs); } catch { results = []; }
-  if (gen !== state.fetchGen) { state.loading = false; if (state.pendingFetch) { state.pendingFetch = false; fetchBatch(); } return; }
+  if (gen !== state.fetchGen) { state.loading = false; updateFeedHeader(); if (state.pendingFetch) { state.pendingFetch = false; fetchBatch(); } return; }
 
   let addedTotal = 0;
 
@@ -585,6 +615,7 @@ async function fetchBatch() {
   }
 
   state.loading = false;
+  updateFeedHeader();
   saveViewCache();
   if (state.pendingFetch) { const runAgain = !state.noMoreResults; state.pendingFetch = false; if (runAgain) fetchBatch(); }
 }
@@ -646,6 +677,7 @@ async function fetchPopularStreaming(sites, gen, loadingEl) {
           document.getElementById('loading').classList.add('hidden');
         }
         state.loading = false;
+        updateFeedHeader();
         saveViewCache();
         if (state.pendingFetch) { state.pendingFetch = false; fetchBatch(); }
       }
@@ -766,6 +798,7 @@ function setActiveTab() {
   document.querySelectorAll('.tab').forEach((t)=>t.classList.remove('active'));
   const btn = document.querySelector(`[data-view="${state.viewType}"]`);
   if (btn) btn.classList.add('active');
+  updateFeedHeader();
 }
 async function loadConfig() {
   state.config = await window.api.loadConfig();
@@ -813,6 +846,27 @@ function setupSearch() {
     scrollToTop();
     fetchBatch();
   });
+}
+function setupFeedHeader() {
+  const refresh = document.getElementById('btn-refresh-feed');
+  refresh?.addEventListener('click', () => {
+    if (!state.loading) refreshView(state.viewType);
+  });
+
+  const input = document.getElementById('tag-search');
+  input?.setAttribute('title', 'Advanced Gelbooru syntax supported. Press / to focus search.');
+  document.addEventListener('keydown', (event) => {
+    const target = event.target;
+    const editing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable;
+    if (event.key === '/' && !editing) {
+      event.preventDefault();
+      input?.focus();
+      input?.select();
+    } else if (event.key === 'Escape' && target === input) {
+      input.blur();
+    }
+  });
+  updateFeedHeader();
 }
 function setupManageSites() {
   document.getElementById('btn-manage-sites').addEventListener('click', ()=>{
@@ -961,6 +1015,7 @@ async function init() {
   try { const keys = await (window.api?.getLocalFavoriteKeys?.() || []); window.__localFavsSet = new Set(keys || []); } catch {}
   setupTabs();
   setupSearch();
+  setupFeedHeader();
   setupManageSites();
   setupInfiniteScroll();
 

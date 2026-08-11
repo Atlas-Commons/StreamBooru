@@ -3,8 +3,8 @@
 set -euo pipefail
 
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/opt/android-sdk}"
-ANDROID_API="${ANDROID_API:-34}"
-BUILD_TOOLS="${BUILD_TOOLS:-34.0.0}"
+ANDROID_API="${ANDROID_API:-36}"
+BUILD_TOOLS="${BUILD_TOOLS:-36.0.0}"
 CMDLINE_ZIP="commandlinetools-linux-11076708_latest.zip"
 
 export DEBIAN_FRONTEND=noninteractive

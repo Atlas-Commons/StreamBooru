@@ -1,22 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-  package="com.streambooru.app">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
   <!-- permissions -->
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
   <application
-    android:allowBackup="true"
+    android:allowBackup="false"
     android:icon="@mipmap/ic_launcher"
     android:label="StreamBooru"
     android:theme="@style/Theme.AppCompat.Light.NoActionBar"
-    android:usesCleartextTraffic="true"
+    android:usesCleartextTraffic="false"
     android:networkSecurityConfig="@xml/network_security_config">
 
     <activity
       android:name="com.streambooru.app.MainActivity"
       android:exported="true"
+      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
       android:launchMode="singleTask">
 
       <!-- launcher -->

@@ -19,9 +19,14 @@ Runtime: **Bun** (v0.2.0+). Database: **PostgreSQL**.
 | `BASE_URL` | yes | Public HTTPS URL, e.g. `https://streambooru.ecchibooru.uk` |
 | `PORT` | no | Default `3000` (Coolify usually injects this) |
 | `HOST` | no | Default `0.0.0.0` |
+| `TRUST_PROXY` | no | Express proxy trust rule; defaults to loopback/private proxy networks |
 | `PGSSL` | no | Set `true` if Postgres requires SSL |
 | `DISCORD_CLIENT_ID` | no | For Discord login/link |
 | `DISCORD_CLIENT_SECRET` | no | For Discord login/link |
+| `MAX_MEDIA_BYTES` | no | Maximum streamed media response, default 512 MiB |
+| `MAX_API_PROXY_BYTES` | no | Maximum buffered API proxy response, default 10 MiB |
+
+Production startup refuses the built-in development value for `JWT_SECRET`. Proxy routes also enforce per-client rate/concurrency limits, validate every redirect target, and never log credential-bearing query strings.
 
 5. Deploy. On each start, `start:prod` runs SQL migrations then starts the API.
 
@@ -58,3 +63,11 @@ bun run start
 | `bun run start` | Start API only |
 | `bun run migrate` | Apply pending SQL migrations |
 | `bun run start:prod` | Migrate then start (used by Coolify) |
+
+Repository-level smoke tests use an isolated local server and do not require a deployed instance:
+
+```bash
+npm run test:server
+```
+
+Use `npm run test:server:deployed` only when intentionally checking the public deployment.

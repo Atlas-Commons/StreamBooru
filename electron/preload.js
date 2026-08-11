@@ -1,6 +1,6 @@
 'use strict';
 
-const { contextBridge, ipcRenderer, shell } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
 const pickSite = (arg) => (arg && typeof arg === 'object' && 'site' in arg ? arg.site : arg);
 
@@ -13,10 +13,7 @@ contextBridge.exposeInMainWorld('api', {
   fetchBooru: (payload) => ipcRenderer.invoke('booru:fetch', payload),
 
   // External
-  openExternal: async (url) => {
-    try { await shell.openExternal(url); return true; }
-    catch { try { return await ipcRenderer.invoke('openExternal', url); } catch { return false; } }
-  },
+  openExternal: (url) => ipcRenderer.invoke('openExternal', url),
 
   // Images
   downloadImage: ({ url, siteName, fileName }) => ipcRenderer.invoke('download:image', { url, siteName, fileName }),

@@ -27,12 +27,14 @@ jobs:
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq
-          apt-get install -y -qq ca-certificates curl gnupg
+          apt-get install -y -qq ca-certificates curl gnupg xvfb
           curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
           apt-get install -y -qq nodejs
       - run: npm ci
+      - run: npm run test:media
       - run: npm run test:server
       - run: npm run test:tags
+      - run: xvfb-run -a npm run test:package
 
   dco:
     name: DCO sign-off

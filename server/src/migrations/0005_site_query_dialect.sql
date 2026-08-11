@@ -1,0 +1,2 @@
+ALTER TABLE user_sites
+  ADD COLUMN IF NOT EXISTS query_dialect TEXT NOT NULL DEFAULT 'auto';

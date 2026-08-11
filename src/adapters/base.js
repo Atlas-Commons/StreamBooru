@@ -49,7 +49,9 @@ function ratingToTag(rating) {
 
 // Accept any number of extra tag strings which are appended
 function buildQueryTags(site, ...extras) {
-  const parts = [ratingToTag(site.rating), site.tags || '', ...(extras || [])]
+  const supplied = [site.tags || '', ...(extras || [])].filter(Boolean).join(' ');
+  const hasRating = /(?:^|\s)-?rating:(?:safe|questionable|explicit|any|[sqe])(?:\s|$)/i.test(supplied);
+  const parts = [hasRating ? '' : ratingToTag(site.rating), site.tags || '', ...(extras || [])]
     .filter(Boolean)
     .join(' ')
     .trim()

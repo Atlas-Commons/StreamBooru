@@ -18,24 +18,28 @@
     return '';
   };
 
+  const videoExtension = function (u) {
+    try {
+      const path = new URL(u, 'https://x/').pathname.toLowerCase();
+      if (path.endsWith('.mp4') || path.endsWith('.m4v')) return 'mp4';
+      if (path.endsWith('.webm')) return 'webm';
+      if (path.endsWith('.mov')) return 'mov';
+    } catch {}
+    return '';
+  };
+
   const isAndroid = () => !!(window.Platform && typeof window.Platform.isAndroid === 'function' && window.Platform.isAndroid());
   const isElectron = () => !!(window.Platform && typeof window.Platform.isElectron === 'function' && window.Platform.isElectron());
   const isWebBrowser = () => !isElectron() && !isAndroid();
+  const hostMatches = (host, domain) => host === domain || host.endsWith(`.${domain}`);
 
   function isHotlinkHost(u) {
     try {
-      const h = new URL(u).hostname;
-      return (
-        h.endsWith('donmai.us') ||
-        h === 'files.yande.re' ||
-        h === 'konachan.com' || h === 'konachan.net' ||
-        h.endsWith('e621.net') || h.endsWith('e926.net') ||
-        h.endsWith('e621.media') || h.endsWith('e926.media') ||
-        h.endsWith('derpibooru.org') || h.endsWith('derpicdn.net') ||
-        h.endsWith('gelbooru.com') || h.endsWith('safebooru.org') ||
-        h.endsWith('rule34.xxx') || h.endsWith('realbooru.com') || h.endsWith('xbooru.com') ||
-        h.endsWith('tbib.org') || h.endsWith('hypnohub.net')
-      );
+      const h = new URL(u).hostname.toLowerCase();
+      return ['donmai.us', 'yande.re', 'konachan.com', 'konachan.net', 'e621.net', 'e926.net',
+        'e621.media', 'e926.media', 'derpibooru.org', 'derpicdn.net', 'gelbooru.com',
+        'safebooru.org', 'rule34.xxx', 'realbooru.com', 'xbooru.com', 'tbib.org',
+        'hypnohub.net'].some((domain) => hostMatches(h, domain));
     } catch { return false; }
   }
 
@@ -55,51 +59,95 @@
   async function setVideoWithFallback(vid, url, sourceEl) {
     if (!url) return;
     const needsProxy = (isAndroid() || isWebBrowser()) && isHotlinkHost(url);
+    const proxyUrl = window.api?.mediaproxyUrl?.(url) || '';
+    let activeUrl = '';
+    let triedProxy = false;
+    let triedBlob = false;
 
-    const loadDirect = () => {
+    const loadUrl = (nextUrl, type = '') => {
+      if (!nextUrl || vid._disposed) return;
+      activeUrl = nextUrl;
       if (sourceEl) {
-        sourceEl.src = url;
-        const t = guessVideoType(url);
+        sourceEl.src = nextUrl;
+        const t = type || guessVideoType(url);
         if (t) sourceEl.type = t;
       } else {
-        vid.src = url;
+        vid.src = nextUrl;
       }
       try { vid.load(); } catch {}
     };
 
-    const loadProxied = async () => {
+    const loadBlob = async () => {
+      if (triedBlob || vid._disposed) return false;
+      triedBlob = true;
+      const resumeAt = Number.isFinite(vid.currentTime) ? Math.max(0, vid.currentTime) : 0;
+      const shouldResume = vid.autoplay || !vid.paused;
+      vid.dispatchEvent(new CustomEvent('streambooru:mediastatus', {
+        detail: { state: 'recovering', text: resumeAt > 0 ? `Recovering at ${resumeAt.toFixed(1)}s…` : 'Preparing reliable playback…' }
+      }));
       try {
         const blob = await window.api.fetchMediaBlob?.(url);
         if (!blob) throw new Error('proxy unavailable');
+        if (vid._disposed) return false;
         const objUrl = URL.createObjectURL(blob);
+        if (vid._blobUrl) URL.revokeObjectURL(vid._blobUrl);
         vid._blobUrl = objUrl;
-        if (sourceEl) {
-          sourceEl.src = objUrl;
-          sourceEl.type = blob.type || guessVideoType(url) || 'video/mp4';
-        } else {
-          vid.src = objUrl;
-        }
-        try { vid.load(); } catch {}
-        const p = vid.play?.();
-        if (p && typeof p.catch === 'function') p.catch(() => {});
+
+        let revealed = false;
+        const previousOpacity = vid.style.opacity;
+        const revealAndResume = () => {
+          if (revealed || vid._disposed) return;
+          revealed = true;
+          vid.style.opacity = previousOpacity;
+          if (shouldResume) {
+            const playback = vid.play?.();
+            if (playback && typeof playback.catch === 'function') playback.catch(() => {});
+          }
+        };
+
+        if (resumeAt > 0) vid.style.opacity = '0';
+        vid.addEventListener('loadedmetadata', () => {
+          if (resumeAt <= 0) {
+            revealAndResume();
+            return;
+          }
+          try {
+            const maxTime = Number.isFinite(vid.duration) ? Math.max(0, vid.duration - 0.05) : resumeAt;
+            vid.currentTime = Math.min(resumeAt, maxTime);
+          } catch {}
+          vid.addEventListener('seeked', revealAndResume, { once: true });
+          setTimeout(revealAndResume, 1000);
+        }, { once: true });
+        loadUrl(objUrl, blob.type || guessVideoType(url) || 'video/mp4');
+        return true;
       } catch (e) {
-        console.warn('video proxy fallback failed', e);
-        loadDirect();
+        console.warn('video blob fallback failed', e);
+        return false;
       }
     };
 
-    if (needsProxy) {
-      await loadProxied();
-    } else {
-      loadDirect();
-    }
-
-    vid.addEventListener('error', () => {
-      if (!vid._proxyRetried && window.api?.fetchMediaBlob) {
-        vid._proxyRetried = true;
-        loadProxied();
+    const retry = async () => {
+      if (vid._disposed) return;
+      if (!triedProxy && proxyUrl && activeUrl !== proxyUrl) {
+        triedProxy = true;
+        vid.dispatchEvent(new CustomEvent('streambooru:mediastatus', {
+          detail: { state: 'recovering', text: 'Switching to the media proxy…' }
+        }));
+        loadUrl(proxyUrl);
+        return;
       }
-    }, { once: true });
+      if (await loadBlob()) return;
+      vid.dispatchEvent(new CustomEvent('streambooru:mediaerror'));
+    };
+
+    vid.addEventListener('error', retry);
+
+    if (needsProxy && proxyUrl) {
+      triedProxy = true;
+      loadUrl(proxyUrl);
+    } else {
+      loadUrl(url);
+    }
   }
 
   const pathFromUrl = function (u) {
@@ -219,6 +267,10 @@
     const s = post.sample_url || '';
     const p = post.preview_url || '';
     const hot = (isAndroid() || isWebBrowser()) && (isHotlinkHost(f) || isHotlinkHost(s));
+    if (post.is_video || isVideoUrl(f) || isVideoUrl(s)) {
+      const videos = (hot ? [s, f] : [f, s]).filter((u) => u && isVideoUrl(u));
+      if (videos.length) return videos[0];
+    }
     const order = hot ? [s, f, p] : [f, s, p];
     for (const u of order) if (u) return u;
     return '';
@@ -229,9 +281,11 @@
     if (!items || !items[index]) return;
     const post = items[index];
 
-    if (lb._blobUrl) {
-      try { URL.revokeObjectURL(lb._blobUrl); } catch {}
-      lb._blobUrl = null;
+    const previousVideo = lb.querySelector('video');
+    if (previousVideo) previousVideo._disposed = true;
+    if (previousVideo?._blobUrl) {
+      try { URL.revokeObjectURL(previousVideo._blobUrl); } catch {}
+      previousVideo._blobUrl = null;
     }
 
     lb.innerHTML = '';
@@ -249,13 +303,31 @@
     const viewport = document.createElement('div');
     viewport.className = 'lb-viewport';
 
+    const mediaStatus = document.createElement('div');
+    mediaStatus.className = 'lb-media-status';
+    mediaStatus.setAttribute('role', 'status');
+    mediaStatus.setAttribute('aria-live', 'polite');
+    const statusSpinner = document.createElement('span');
+    statusSpinner.className = 'lb-status-spinner';
+    statusSpinner.setAttribute('aria-hidden', 'true');
+    const statusText = document.createElement('span');
+    mediaStatus.appendChild(statusSpinner);
+    mediaStatus.appendChild(statusText);
+    const setMediaStatus = (state, text = '') => {
+      mediaStatus.dataset.state = state;
+      statusText.textContent = text;
+      mediaStatus.hidden = state === 'ready' || !text;
+    };
+    setMediaStatus('loading', isVid ? 'Loading video…' : 'Loading image…');
+
     let mediaEl;
     let tipEl = null;
     let zoomCtl = null;
 
     if (isVid) {
-      const mp4 = full.toLowerCase().endsWith('.mp4') || full.toLowerCase().endsWith('.m4v');
-      const webm = full.toLowerCase().endsWith('.webm');
+      const extension = videoExtension(full);
+      const mp4 = extension === 'mp4';
+      const webm = extension === 'webm';
 
       const mp4Ok = canPlayMp4H264();
       const webmOk = canPlayWebmVp9();
@@ -268,8 +340,8 @@
       const vid = document.createElement('video');
       vid.className = 'lb-media';
       vid.controls = true;
-      vid.autoplay = !unsupported;
-      vid.loop = true;
+      vid.autoplay = true;
+      vid.loop = false;
       vid.muted = true;
       vid.playsInline = true;
       vid.preload = 'auto';
@@ -279,28 +351,39 @@
       vid.appendChild(source);
 
       const tryPlay = () => {
-        try { vid.load(); } catch {}
         const p = vid.play?.();
         if (p && typeof p.catch === 'function') p.catch(() => {});
       };
 
-      if (!unsupported) {
-        vid.addEventListener('canplay', tryPlay, { once: true });
-        vid.addEventListener('loadeddata', tryPlay, { once: true });
-        vid.addEventListener('click', () => {
-          if (vid.paused) { tryPlay(); } else { vid.pause(); }
-        });
-        setVideoWithFallback(vid, full, source).then(() => {
-          if (vid._blobUrl) lb._blobUrl = vid._blobUrl;
-        });
-      } else {
-        tipEl = makeTip('This environment cannot decode this video. Use “Open Media”.');
+      vid.addEventListener('canplay', tryPlay, { once: true });
+      vid.addEventListener('loadstart', () => setMediaStatus('loading', 'Loading video…'));
+      vid.addEventListener('waiting', () => setMediaStatus('buffering', 'Buffering…'));
+      vid.addEventListener('stalled', () => setMediaStatus('buffering', 'Network stalled—recovering…'));
+      vid.addEventListener('playing', () => setMediaStatus('ready'));
+      vid.addEventListener('streambooru:mediastatus', (event) => {
+        setMediaStatus(event.detail?.state || 'loading', event.detail?.text || 'Loading video…');
+      });
+      vid.addEventListener('click', () => {
+        if (vid.paused) { tryPlay(); } else { vid.pause(); }
+      });
+      vid.addEventListener('streambooru:mediaerror', () => {
+        setMediaStatus('error', 'Video could not be loaded');
+        if (!tipEl) {
+          tipEl = makeTip('This video could not be loaded. Use “Open Media” to try it directly.');
+          viewport.insertAdjacentElement('afterend', tipEl);
+        }
+      });
+      setVideoWithFallback(vid, full, source);
+      if (unsupported) {
+        tipEl = makeTip('Your browser may not support this video codec. Playback will still be attempted.');
       }
 
       mediaEl = vid;
     } else {
       const img = document.createElement('img');
       img.className = 'lb-media';
+      img.addEventListener('load', () => setMediaStatus('ready'));
+      img.addEventListener('error', () => setMediaStatus('error', 'Image could not be loaded'));
       setImageWithFallback(img, full);
       img.alt = post.tags?.join(' ') || '';
       mediaEl = img;
@@ -308,6 +391,7 @@
     }
 
     viewport.appendChild(mediaEl);
+    viewport.appendChild(mediaStatus);
 
     const toolbar = document.createElement('div');
     toolbar.className = 'toolbar';
@@ -338,13 +422,26 @@
     dlBtn.textContent = 'Download';
     dlBtn.addEventListener('click', async () => {
       if (!full) return;
-      const nameGuess = (post.tags?.slice(0, 4).join('_') || 'media') + pathFromUrl(full);
-      const res = await window.api.downloadImage({
-        url: full,
-        siteName: post.site?.name || post.site?.baseUrl || 'site',
-        fileName: nameGuess
-      });
-      if (!res?.ok && !res?.cancelled) { alert('Download failed' + (res?.error ? `: ${res.error}` : '')); }
+      const previousLabel = dlBtn.textContent;
+      dlBtn.disabled = true;
+      dlBtn.textContent = 'Downloading…';
+      const nameGuess = window.getFileNameForPost?.(post, index)
+        || (post.tags?.slice(0, 4).join('_') || 'media') + pathFromUrl(full);
+      try {
+        const res = await window.api.downloadImage({
+          url: full,
+          siteName: post.site?.name || post.site?.baseUrl || 'site',
+          fileName: nameGuess
+        });
+        if (!res?.ok && !res?.cancelled) { alert('Download failed' + (res?.error ? `: ${res.error}` : '')); }
+        else if (res?.ok) {
+          dlBtn.textContent = 'Downloaded ✓';
+          setTimeout(() => { if (dlBtn.isConnected) dlBtn.textContent = previousLabel; }, 1800);
+        }
+      } finally {
+        dlBtn.disabled = false;
+        if (dlBtn.textContent === 'Downloading…') dlBtn.textContent = previousLabel;
+      }
     });
 
     if (zoomCtl) {
@@ -420,9 +517,11 @@
   const hide = function (lb) {
     document.removeEventListener('keydown', lb._keyHandler, true);
     lb._keyHandler = null;
-    if (lb._blobUrl) {
-      try { URL.revokeObjectURL(lb._blobUrl); } catch {}
-      lb._blobUrl = null;
+    const video = lb.querySelector('video');
+    if (video) video._disposed = true;
+    if (video?._blobUrl) {
+      try { URL.revokeObjectURL(video._blobUrl); } catch {}
+      video._blobUrl = null;
     }
     lb.classList.add('hidden');
     lb.setAttribute('aria-hidden', 'true');

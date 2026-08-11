@@ -2,9 +2,12 @@ const { app, BrowserWindow, ipcMain, net, Menu, shell, dialog } = require('elect
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const { createNetworkClient } = require('./network');
 
 /* dev */
 const isDev = process.env.SB_DEV === '1';
+const isSmokeTest = process.env.SB_SMOKE_TEST === '1';
+if (isSmokeTest && process.env.SB_SMOKE_USER_DATA) app.setPath('userData', process.env.SB_SMOKE_USER_DATA);
 
 /* constants */
 const DEFAULT_SERVER = 'https://streambooru.ecchibooru.uk';
@@ -27,25 +30,41 @@ const Moebooru    = loadAdapter('moebooru');
 const Gelbooru    = loadAdapter('gelbooru');
 const E621        = loadAdapter('e621');
 const Derpibooru  = loadAdapter('derpibooru');
-const { refererHeadersFor, BOORU_UA } = require('../server/src/refererFor');
+const { refererHeadersFor, BOORU_UA } = require('../src/shared/refererFor');
+const {
+  applyDefaultHeaders,
+  downloadUrlToFile,
+  httpDelete,
+  httpGetJson,
+  httpPostForm,
+  httpPostJson,
+  httpPutJson
+} = createNetworkClient({ net, refererHeadersFor, userAgent: BOORU_UA, isDev });
 
 let win;
+
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
+async function openSafeExternal(value) {
+  const url = safeExternalUrl(value);
+  if (!url) return false;
+  await shell.openExternal(url);
+  return true;
+}
 
 /* headers */
 function setupHotlinkHeaders(sess) {
   sess.webRequest.onBeforeSendHeaders({ urls: ['*://*/*'] }, (details, cb) => {
     try {
       const headers = { ...details.requestHeaders };
-      const host = new URL(details.url).hostname;
-      let referer = null;
-      if (host.endsWith('donmai.us')) referer = 'https://danbooru.donmai.us/';
-      else if (host === 'files.yande.re') referer = 'https://yande.re/';
-      else if (host === 'konachan.com') referer = 'https://konachan.com/';
-      else if (host === 'konachan.net') referer = 'https://konachan.net/';
-      else if (host.endsWith('e621.net') || host.endsWith('e621.media')) referer = 'https://e621.net/';
-      else if (host.endsWith('e926.net') || host.endsWith('e926.media')) referer = 'https://e926.net/';
-      else if (host.endsWith('derpicdn.net') || host.endsWith('derpibooru.org')) referer = 'https://derpibooru.org/';
-      if (referer) headers['Referer'] = referer;
+      Object.assign(headers, refererHeadersFor(details.url));
       headers['User-Agent'] = headers['User-Agent'] || 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36 StreamBooru/Electron';
       cb({ requestHeaders: headers });
     } catch { cb({}); }
@@ -57,7 +76,7 @@ function setupHotlinkHeaders(sess) {
       try {
         const h = new URL(d.url).hostname;
         if (h.includes('gelbooru') || h.includes('safebooru') || h.includes('rule34') || h.includes('realbooru') || h.includes('xbooru') || h.includes('derpibooru') || h.includes('derpicdn')) {
-          console.log('[net:onCompleted]', JSON.stringify({ url: d.url, statusCode: d.statusCode, method: d.method, fromCache: d.fromCache || false }));
+          console.log('[net:onCompleted]', JSON.stringify({ origin: new URL(d.url).origin, path: new URL(d.url).pathname, statusCode: d.statusCode, method: d.method, fromCache: d.fromCache || false }));
         }
       } catch {}
     });
@@ -65,7 +84,7 @@ function setupHotlinkHeaders(sess) {
       try {
         const h = new URL(d.url).hostname;
         if (h.includes('gelbooru') || h.includes('safebooru') || h.includes('rule34') || h.includes('realbooru') || h.includes('xbooru') || h.includes('derpibooru') || h.includes('derpicdn')) {
-          console.warn('[net:onError]', JSON.stringify({ url: d.url, error: d.error, method: d.method }));
+          console.warn('[net:onError]', JSON.stringify({ origin: new URL(d.url).origin, path: new URL(d.url).pathname, error: d.error, method: d.method }));
         }
       } catch {}
     });
@@ -75,13 +94,30 @@ function setupHotlinkHeaders(sess) {
 /* window */
 function createWindow() {
   win = new BrowserWindow({
-    width: 1200, height: 800, title: 'StreamBooru', autoHideMenuBar: true,
+    width: 1200, height: 800, title: 'StreamBooru', autoHideMenuBar: true, show: !isSmokeTest,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true }
   });
   Menu.setApplicationMenu(null);
   win.setMenuBarVisibility(false);
   setupHotlinkHeaders(win.webContents.session);
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+
+  if (isSmokeTest) {
+    const timeout = setTimeout(() => {
+      console.error('STREAMBOORU_SMOKE_TIMEOUT');
+      app.exit(1);
+    }, 20_000);
+    win.webContents.once('did-finish-load', () => {
+      clearTimeout(timeout);
+      console.log('STREAMBOORU_SMOKE_READY');
+      setTimeout(() => app.exit(0), 100);
+    });
+    win.webContents.once('did-fail-load', (_event, code, description) => {
+      clearTimeout(timeout);
+      console.error(`STREAMBOORU_SMOKE_FAILED ${code} ${description}`);
+      app.exit(1);
+    });
+  }
 
   if (isDev) {
     try { win.webContents.openDevTools({ mode: 'detach' }); } catch {}
@@ -144,98 +180,6 @@ function saveFavorites(arr) {
 function removeLocalFavoriteKey(key) {
   const items = loadFavorites().filter((it) => it.key !== key);
   saveFavorites(items);
-}
-
-/* http */
-function applyDefaultHeaders(request, url, headers = {}) {
-  const refHdr = refererHeadersFor(url);
-  const h = {
-    'User-Agent': BOORU_UA,
-    Accept: '*/*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    ...refHdr,
-    ...headers
-  };
-  Object.entries(h).forEach(([k, v]) => { if (v != null && v !== '') request.setHeader(k, v); });
-}
-function httpGetJson(url, headers = {}) {
-  if (isDev) console.log('[GET]', url);
-  return new Promise((resolve, reject) => {
-    const req = net.request({ url, method: 'GET' });
-    applyDefaultHeaders(req, url, { Accept: 'application/json', ...headers });
-    let data = '';
-    req.on('response', (res) => {
-      const status = res.statusCode || 0;
-      res.on('data', (c)=> data += c);
-      res.on('end', () => {
-        if (status >= 400) return reject(new Error(`HTTP ${status} from ${url}\n${data.slice(0,300)}...`));
-        try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
-      });
-    });
-    req.on('error', reject); req.end();
-  });
-}
-function httpPostForm(url, form, headers = {}) {
-  if (isDev) console.log('[POST-FORM]', url);
-  return new Promise((resolve, reject) => {
-    const body = new URLSearchParams(form || {}).toString();
-    const req = net.request({ url, method: 'POST' });
-    applyDefaultHeaders(req, url, { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json', ...headers });
-    let data = '';
-    req.on('response', (res) => {
-      const status = res.statusCode || 0;
-      res.on('data', (c)=> data += c);
-      res.on('end', () => {
-        if (status >= 400) return reject(new Error(`HTTP ${status} from ${url}\n${data.slice(0,300)}...`));
-        try { resolve(JSON.parse(data)); } catch { resolve({ ok: true, raw: data }); }
-      });
-    });
-    req.on('error', reject); req.write(body); req.end();
-  });
-}
-function httpPostJson(url, json, headers = {}) {
-  if (isDev) console.log('[POST-JSON]', url);
-  return new Promise((resolve) => {
-    const req = net.request({ url, method: 'POST' });
-    applyDefaultHeaders(req, url, { 'Content-Type': 'application/json', Accept: 'application/json', ...headers });
-    let data = '';
-    req.on('response', (res) => {
-      const status = res.statusCode || 0;
-      res.on('data', (c)=> data += c);
-      res.on('end', () => { try { resolve({ status, json: JSON.parse(data) }); } catch { resolve({ status, json: null }); } });
-    });
-    req.on('error', () => resolve({ status: 0, json: null }));
-    req.write(JSON.stringify(json || {})); req.end();
-  });
-}
-function httpPutJson(url, json, headers = {}) {
-  if (isDev) console.log('[PUT-JSON]', url);
-  return new Promise((resolve) => {
-    const req = net.request({ url, method: 'PUT' });
-    applyDefaultHeaders(req, url, { 'Content-Type': 'application/json', Accept: 'application/json', ...headers });
-    let data = '';
-    req.on('response', (res) => {
-      const status = res.statusCode || 0;
-      res.on('data', (c)=> data += c);
-      res.on('end', () => { try { resolve({ status, json: JSON.parse(data) }); } catch { resolve({ status, json: null }); } });
-    });
-    req.on('error', () => resolve({ status: 0, json: null }));
-    req.write(JSON.stringify(json || {})); req.end();
-  });
-}
-function httpDelete(url, headers = {}) {
-  if (isDev) console.log('[DELETE]', url);
-  return new Promise((resolve) => {
-    const req = net.request({ url, method: 'DELETE' });
-    applyDefaultHeaders(req, url, headers);
-    let data = '';
-    req.on('response', (res) => {
-      const status = res.statusCode || 0;
-      res.on('data', (c)=> data += c);
-      res.on('end', () => { try { resolve({ status, json: JSON.parse(data) }); } catch { resolve({ status, json: null }); } });
-    });
-    req.on('error', () => resolve({ status: 0, json: null })); req.end();
-  });
 }
 
 /* adapters registry */
@@ -380,6 +324,7 @@ async function sitesRemotePut(sites) {
       base_url,
       rating: String(s.rating || 'safe'),
       tags: String(s.tags || ''),
+      queryDialect: String(s.queryDialect || s.query_dialect || 'auto'),
       order_index: Number(s.order_index ?? idx) || idx,
       credentials: {}
     };
@@ -449,7 +394,7 @@ ipcMain.handle('booru:fetch', async (_evt, payload) => {
 });
 
 /* IPC: external */
-ipcMain.handle('openExternal', async (_evt, url) => { if (!url) return false; await shell.openExternal(url); return true; });
+ipcMain.handle('openExternal', async (_evt, url) => openSafeExternal(url));
 
 /* IPC: images */
 ipcMain.handle('download:image', async (_evt, payload) => {
@@ -459,15 +404,12 @@ ipcMain.handle('download:image', async (_evt, payload) => {
   const suggested = path.join(defaultDir, 'StreamBooru', siteName.replace(/[^\w.-]+/g, '_'), fileName || path.basename(new URL(url).pathname));
   const savePath = dialog.showSaveDialogSync(win, { title: 'Save Image', defaultPath: suggested });
   if (!savePath) return { ok: false, cancelled: true };
-  await fs.promises.mkdir(path.dirname(savePath), { recursive: true });
-  await new Promise((resolve, reject) => {
-    const req = net.request({ url, method: 'GET' });
-    applyDefaultHeaders(req, url, {});
-    const file = fs.createWriteStream(savePath);
-    req.on('response', (res) => { res.pipe(file); res.on('end', resolve); res.on('error', reject); });
-    req.on('error', reject); req.end();
-  });
-  return { ok: true, path: savePath };
+  try {
+    await downloadUrlToFile(url, savePath);
+    return { ok: true, path: savePath };
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
+  }
 });
 ipcMain.handle('download:bulk', async (_evt, payload) => {
   const { items = [], options = {} } = payload || {};
@@ -487,16 +429,9 @@ ipcMain.handle('download:bulk', async (_evt, payload) => {
         const u = new URL(it.url);
         const siteFolder = subfolder ? sanitize(it.siteName || u.hostname || 'unknown') : '';
         const targetDir = siteFolder ? path.join(basePath, siteFolder) : basePath;
-        await fs.promises.mkdir(targetDir, { recursive: true });
         const filename = sanitize(it.fileName || path.basename(u.pathname) || `file_${i}`);
         const outPath = path.join(targetDir, filename);
-        await new Promise((resolve, reject) => {
-          const req = net.request({ url: it.url, method: 'GET' });
-          applyDefaultHeaders(req, it.url, {});
-          const file = fs.createWriteStream(outPath);
-          req.on('response', (res) => { res.pipe(file); res.on('end', resolve); res.on('error', reject); });
-          req.on('error', reject); req.end();
-        });
+        await downloadUrlToFile(it.url, outPath);
         results.push({ i, ok: true, path: outPath });
       } catch (e) { results.push({ i, ok: false, error: String(e?.message || e) }); }
     }
@@ -655,7 +590,10 @@ ipcMain.handle('account:loginDiscord', async () => {
   await new Promise((resolve, reject) => { srv.listen(0, '127.0.0.1', resolve); srv.on('error', reject); });
   const port = srv.address().port;
   const redirect = `http://127.0.0.1:${port}/callback`;
-  await shell.openExternal(`${base}/auth/discord?redirect_uri=${encodeURIComponent(redirect)}`);
+  if (!await openSafeExternal(`${base}/auth/discord?redirect_uri=${encodeURIComponent(redirect)}`)) {
+    try { srv.close(); } catch {}
+    return { ok: false, error: 'Invalid authentication server URL' };
+  }
 
   const result = await new Promise((resolve) => {
     const t = setTimeout(() => { try { srv.close(); } catch {} resolve({ ok: false, error: 'Timeout' }); }, 120000);
@@ -707,7 +645,10 @@ ipcMain.handle('account:linkDiscord', async () => {
     });
     if (!linkStart || !linkStart.ok || !linkStart.url) { try { srv.close(); } catch {} return { ok: false, error: 'Server refused link start' }; }
 
-    await shell.openExternal(linkStart.url);
+    if (!await openSafeExternal(linkStart.url)) {
+      try { srv.close(); } catch {}
+      return { ok: false, error: 'Invalid Discord link URL' };
+    }
 
     const result = await new Promise((resolve) => {
       const t = setTimeout(() => { try { srv.close(); } catch {} resolve({ ok: true, linked: false, timeout: true }); }, 120000);

@@ -162,7 +162,7 @@ makepkg -si
 * **Troubleshooting Tips:**
     * *Blurry Danbooru Thumbs:* Fixed! Cards now use larger previews (`sample_url`). Videos still use small previews.
     * *Gelbooru "No results" or 401:* Add `user_id` and `api_key` in Manage Sites for gelbooru.com, or try `safebooru.org`.
-    * *Search only shows some sites:* Search uses each site's own engine. If plain tags yield nothing on Moebooru/Gelbooru, the app retries with sorting tags like `order:score`.
+    * *Search only shows some sites:* Search uses each site's own engine. Gelbooru advanced syntax is translated for Rule34.xxx automatically; custom Gelbooru forks can select their syntax in Manage Sites. If plain tags yield nothing on Moebooru/Gelbooru, the app retries with a compatible sorting tag.
     * *`rating:safe` in tags:* Use the Rating dropdown in Manage Sites instead; the tag input ignores `rating:` tokens.
 
 ---

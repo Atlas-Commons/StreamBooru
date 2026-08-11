@@ -4,7 +4,8 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { EventEmitter } = require('events');
-const { Readable } = require('stream');
+const { Readable, Transform } = require('stream');
+const { pipeline } = require('stream/promises');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
@@ -19,8 +20,11 @@ const {
   refererHeadersFor,
   BOORU_UA
 } = require('./refererFor');
+const { applyMediaResponseHeaders, buildMediaRequestHeaders } = require('./mediaProxyHeaders');
+const { fetchWithAllowedRedirects, readResponseBufferWithLimit } = require('./proxyFetch');
+const { createConcurrencyLimit, createRateLimit } = require('./requestGuards');
 const app = express();
-app.set('trust proxy', true);
+app.set('trust proxy', process.env.TRUST_PROXY || 'loopback, linklocal, uniquelocal');
 
 /* body parser (1 MB, tolerant) */
 app.use((req, res, next) => {
@@ -45,8 +49,8 @@ app.use((req, res, next) => {
   req.on('error', () => next());
 });
 
-/* request log */
-app.use((req, _res, next) => { try { console.log(`${req.method} ${req.url}`); } catch {} next(); });
+/* Never log query strings: proxied upstream URLs may contain API credentials. */
+app.use((req, _res, next) => { try { console.log(`${req.method} ${req.path}`); } catch {} next(); });
 
 /* ---------- config ---------- */
 const PORT = Number(process.env.PORT || 3000);
@@ -56,6 +60,19 @@ const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID || '';
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || '';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
+const MAX_MEDIA_BYTES = Math.max(1, Number(process.env.MAX_MEDIA_BYTES || 512 * 1024 * 1024));
+const MAX_API_PROXY_BYTES = Math.max(1, Number(process.env.MAX_API_PROXY_BYTES || 10 * 1024 * 1024));
+
+if (process.env.NODE_ENV === 'production' && JWT_SECRET === 'dev_secret') {
+  throw new Error('JWT_SECRET must be configured in production');
+}
+
+const authRateLimit = createRateLimit({ windowMs: 10 * 60_000, max: 30, label: 'authentication' });
+const apiProxyRateLimit = createRateLimit({ windowMs: 60_000, max: 120, label: 'booru proxy' });
+const mediaRateLimit = createRateLimit({ windowMs: 60_000, max: 240, label: 'media proxy' });
+const mediaConcurrencyLimit = createConcurrencyLimit({ maxGlobal: 60, maxPerClient: 8, label: 'media proxy' });
+
+app.use(['/auth/local/register', '/auth/local/login', '/auth/discord'], authRateLimit);
 
 /* ---------- utils ---------- */
 function publicBase(req) {
@@ -83,12 +100,15 @@ function cryptoRandomId() { return crypto.randomBytes(16).toString('hex'); }
 function isAllowedDeepLink(url) {
   const u = String(url || '').trim();
   if (!u) return false;
-  if (u.startsWith('streambooru://')) return true;
-  if (u.startsWith('http://127.0.0.1') || u.startsWith('http://localhost')) return true;
-  if (STATIC_BASE_URL && u.startsWith(STATIC_BASE_URL)) return true;
   try {
     const parsed = new URL(u);
-    if (parsed.pathname === '/oauth-callback' || parsed.pathname === '/app/oauth-callback') return true;
+    if (parsed.protocol === 'streambooru:' && parsed.hostname === 'oauth') {
+      return parsed.pathname === '/discord' || parsed.pathname === '/linked';
+    }
+    if (parsed.protocol === 'http:' && (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost')) {
+      return parsed.pathname === '/callback' && /^\d+$/.test(parsed.port);
+    }
+    if (STATIC_BASE_URL && parsed.origin === new URL(STATIC_BASE_URL).origin) return true;
   } catch {}
   return false;
 }
@@ -493,7 +513,7 @@ function normBaseUrl(u) {
 
 app.get('/api/sites', auth, async (req, res) => {
   const r = await query(`
-    SELECT site_id, name, type, base_url, rating, tags, credentials_enc, order_index
+    SELECT site_id, name, type, base_url, rating, tags, query_dialect, credentials_enc, order_index
     FROM user_sites WHERE user_id = $1 ORDER BY order_index ASC, created_at ASC
   `, [req.user.id]);
   const sites = r.rows.map(row => {
@@ -505,6 +525,7 @@ app.get('/api/sites', auth, async (req, res) => {
       baseUrl: row.base_url,
       rating: row.rating,
       tags: row.tags,
+      queryDialect: row.query_dialect || 'auto',
       credentials: creds,
       order_index: row.order_index
     };
@@ -524,7 +545,9 @@ app.put('/api/sites', auth, async (req, res) => {
       const base_url = normBaseUrl(s.base_url || s.baseUrl || '');
       const name = String(s.name || '').slice(0, 200);
       const rating = String(s.rating || 'safe').slice(0, 40);
-      const tags = String(s.tags || '').slice(0, 200);
+      const tags = String(s.tags || '').slice(0, 800);
+      const requestedDialect = String(s.queryDialect || s.query_dialect || 'auto').toLowerCase();
+      const query_dialect = ['auto', 'gelbooru', 'rule34'].includes(requestedDialect) ? requestedDialect : 'auto';
       const order_index = Number(s.order_index ?? idx) || idx;
 
       const credIn = (s && typeof s.credentials === 'object' && !Array.isArray(s.credentials)) ? s.credentials : {};
@@ -543,7 +566,7 @@ app.put('/api/sites', auth, async (req, res) => {
           }
         });
       }
-      return { name, type, base_url, rating, tags, order_index, credentials };
+      return { name, type, base_url, rating, tags, query_dialect, order_index, credentials };
     }).filter(s => s.type && s.base_url);
 
     const now = Date.now();
@@ -556,9 +579,9 @@ app.put('/api/sites', auth, async (req, res) => {
         const credsEnc = enc(s.credentials || {});
         const site_id = cryptoRandomId();
         await client.query(`
-          INSERT INTO user_sites (site_id, user_id, name, type, base_url, rating, tags, credentials_enc, order_index, created_at, updated_at)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11)
-        `, [site_id, req.user.id, s.name, s.type, s.base_url, s.rating, s.tags, credsEnc, s.order_index ?? i, now, now]);
+          INSERT INTO user_sites (site_id, user_id, name, type, base_url, rating, tags, query_dialect, credentials_enc, order_index, created_at, updated_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12)
+        `, [site_id, req.user.id, s.name, s.type, s.base_url, s.rating, s.tags, s.query_dialect, credsEnc, s.order_index ?? i, now, now]);
       }
       await client.query('COMMIT');
     } catch (e) {
@@ -629,38 +652,50 @@ async function proxyMediaRequest(req, res, { download = false, filename = '' } =
     const accept = String(req.query.accept || '').trim() ||
       'image/avif,image/webp,image/apng,image/*,video/*,application/octet-stream,*/*;q=0.8';
 
-    const hdr = {
-      'User-Agent': BOORU_UA,
-      Accept: accept,
-      ...refererHeadersFor(url, refParam)
-    };
+    const hdr = buildMediaRequestHeaders({
+      url,
+      accept,
+      ref: refParam,
+      range: String(req.headers.range || '').trim()
+    });
 
-    const r = await fetch(url, { headers: hdr });
+    const r = await fetchWithAllowedRedirects(url, { headers: hdr }, isProxyAllowed);
     if (!r.ok) {
       res.status(r.status).end(`Upstream ${r.status}`);
       return;
     }
 
-    const ct = r.headers.get('content-type') || 'application/octet-stream';
-    res.setHeader('Content-Type', ct);
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-
-    if (download) {
-      const safeName = String(filename || 'download').replace(/[<>:"/\\|?*\x00-\x1F]+/g, '_').slice(0, 200);
-      res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+    const contentLength = Number(r.headers.get('content-length') || 0);
+    if (contentLength > MAX_MEDIA_BYTES) {
+      try { await r.body?.cancel(); } catch {}
+      return res.status(413).end('Upstream media is too large');
     }
 
-    if (r.body) Readable.fromWeb(r.body).pipe(res);
+    res.status(r.status);
+    applyMediaResponseHeaders(res, r, { download, filename });
+
+    if (r.body) {
+      let transferred = 0;
+      const limiter = new Transform({
+        transform(chunk, _encoding, callback) {
+          transferred += chunk.length;
+          if (transferred > MAX_MEDIA_BYTES) return callback(new Error('Upstream media exceeded byte limit'));
+          callback(null, chunk);
+        }
+      });
+      await pipeline(Readable.fromWeb(r.body), limiter, res);
+    }
     else res.end(Buffer.from(await r.arrayBuffer()));
   } catch (e) {
     console.error('mediaproxy error', e);
-    res.status(500).end('proxy error');
+    if (!res.headersSent) res.status(e?.code === 'PROXY_TARGET_DENIED' ? 400 : 502).end('proxy error');
+    else res.destroy();
   }
 }
 
-app.get('/imgproxy', (req, res) => proxyMediaRequest(req, res));
+app.get('/imgproxy', mediaRateLimit, mediaConcurrencyLimit, (req, res) => proxyMediaRequest(req, res));
 
-app.get('/mediaproxy', (req, res) => {
+app.get('/mediaproxy', mediaRateLimit, mediaConcurrencyLimit, (req, res) => {
   const download = String(req.query.download || '') === '1';
   const filename = String(req.query.filename || '');
   return proxyMediaRequest(req, res, { download, filename });
@@ -679,7 +714,7 @@ app.options('/api/booru/fetch', (req, res) => {
   res.status(204).end();
 });
 
-app.get('/api/booru/fetch', async (req, res) => {
+app.get('/api/booru/fetch', apiProxyRateLimit, async (req, res) => {
   setBooruProxyCors(res);
   try {
     const url = String(req.query.url || '');
@@ -699,9 +734,9 @@ app.get('/api/booru/fetch', async (req, res) => {
       try { hdr.Origin = new URL(ref).origin; } catch { hdr.Origin = ref; }
     }
 
-    const upstream = await fetch(url, { headers: hdr, redirect: 'follow' });
+    const upstream = await fetchWithAllowedRedirects(url, { headers: hdr }, isBooruHostAllowed);
     const ct = upstream.headers.get('content-type') || 'application/octet-stream';
-    const body = Buffer.from(await upstream.arrayBuffer());
+    const body = await readResponseBufferWithLimit(upstream, MAX_API_PROXY_BYTES);
 
     res.status(upstream.status);
     res.setHeader('Content-Type', ct);
@@ -709,7 +744,8 @@ app.get('/api/booru/fetch', async (req, res) => {
     res.end(body);
   } catch (e) {
     console.error('booru fetch proxy error', e?.message || e);
-    res.status(502).json({ ok: false, error: 'proxy error' });
+    const status = e?.code === 'PROXY_TARGET_DENIED' ? 400 : e?.code === 'PROXY_BODY_LIMIT' ? 413 : 502;
+    res.status(status).json({ ok: false, error: status === 413 ? 'upstream response is too large' : 'proxy error' });
   }
 });
 
@@ -739,7 +775,16 @@ if (webRoot) {
 }
 
 /* ---------- start ---------- */
-app.listen(PORT, HOST, () => {
-  const pub = STATIC_BASE_URL || `http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`;
-  console.log(`Sync server listening on ${HOST}:${PORT} (public base: ${pub})`);
-});
+function startServer(port = PORT, host = HOST) {
+  const server = app.listen(port, host, () => {
+    const address = server.address();
+    const actualPort = address && typeof address === 'object' ? address.port : port;
+    const pub = STATIC_BASE_URL || `http://${host === '0.0.0.0' ? 'localhost' : host}:${actualPort}`;
+    console.log(`Sync server listening on ${host}:${actualPort} (public base: ${pub})`);
+  });
+  return server;
+}
+
+if (require.main === module) startServer();
+
+module.exports = { app, startServer };

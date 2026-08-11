@@ -1,21 +1,24 @@
 /**
  * Shared Referer/Origin helpers for booru CDN hotlink requirements.
  */
-function hostAllowed(hostname) {
-  const h = String(hostname || "").toLowerCase();
-  return (
-    h.endsWith("donmai.us") ||
-    h === "files.yande.re" || h.endsWith("yande.re") ||
-    h === "konachan.com" || h === "konachan.net" ||
-    h.endsWith("e621.net") || h.endsWith("e926.net") ||
-    h.endsWith("derpibooru.org") || h.endsWith("derpicdn.net") ||
-    h.endsWith("gelbooru.com") || h.endsWith("safebooru.org") ||
-    h.endsWith("rule34.xxx") || h.endsWith("realbooru.com") || h.endsWith("xbooru.com") ||
-    h.endsWith("tbib.org") || h.endsWith("hypnohub.net")
-  );
+const ALLOWED_HOSTS = [
+  "donmai.us", "yande.re", "konachan.com", "konachan.net",
+  "e621.net", "e926.net", "e621.media", "e926.media",
+  "derpibooru.org", "derpicdn.net", "gelbooru.com", "safebooru.org",
+  "rule34.xxx", "realbooru.com", "xbooru.com", "tbib.org", "hypnohub.net"
+];
+
+function hostMatches(hostname, domain) {
+  const h = String(hostname || "").toLowerCase().replace(/\.$/, "");
+  const d = String(domain || "").toLowerCase().replace(/\.$/, "");
+  return !!h && !!d && (h === d || h.endsWith(`.${d}`));
 }
 
-export function isBooruHostAllowed(url) {
+function hostAllowed(hostname) {
+  return ALLOWED_HOSTS.some((domain) => hostMatches(hostname, domain));
+}
+
+function isBooruHostAllowed(url) {
   try {
     const u = new URL(url);
     const okProto = u.protocol === "https:" || u.protocol === "http:";
@@ -25,33 +28,34 @@ export function isBooruHostAllowed(url) {
   }
 }
 
-export function isProxyAllowed(url) {
+function isProxyAllowed(url) {
   return isBooruHostAllowed(url);
 }
 
-export function refererFor(url) {
+function refererFor(url) {
   try {
     const h = new URL(url).hostname.toLowerCase();
-    if (h.endsWith("donmai.us")) return "https://danbooru.donmai.us";
-    if (h.endsWith("yande.re") || h === "files.yande.re") return "https://yande.re";
-    if (h.endsWith("konachan.com")) return "https://konachan.com";
-    if (h.endsWith("konachan.net")) return "https://konachan.net";
-    if (h.endsWith("hypnohub.net")) return "https://hypnohub.net";
-    if (h.endsWith("tbib.org")) return "https://tbib.org";
-    if (h.endsWith("gelbooru.com")) return "https://gelbooru.com";
-    if (h.endsWith("safebooru.org")) return "https://safebooru.org";
-    if (h.endsWith("rule34.xxx")) return "https://rule34.xxx";
-    if (h.endsWith("realbooru.com")) return "https://realbooru.com";
-    if (h.endsWith("xbooru.com")) return "https://xbooru.com";
-    if (h.endsWith("e621.net") || h.endsWith("e926.net")) return "https://e621.net";
-    if (h.endsWith("derpicdn.net") || h.endsWith("derpibooru.org")) return "https://derpibooru.org";
+    if (hostMatches(h, "donmai.us")) return "https://danbooru.donmai.us";
+    if (hostMatches(h, "yande.re")) return "https://yande.re";
+    if (hostMatches(h, "konachan.com")) return "https://konachan.com";
+    if (hostMatches(h, "konachan.net")) return "https://konachan.net";
+    if (hostMatches(h, "hypnohub.net")) return "https://hypnohub.net";
+    if (hostMatches(h, "tbib.org")) return "https://tbib.org";
+    if (hostMatches(h, "gelbooru.com")) return "https://gelbooru.com";
+    if (hostMatches(h, "safebooru.org")) return "https://safebooru.org";
+    if (hostMatches(h, "rule34.xxx")) return "https://rule34.xxx";
+    if (hostMatches(h, "realbooru.com")) return "https://realbooru.com";
+    if (hostMatches(h, "xbooru.com")) return "https://xbooru.com";
+    if (hostMatches(h, "e621.net") || hostMatches(h, "e621.media")) return "https://e621.net";
+    if (hostMatches(h, "e926.net") || hostMatches(h, "e926.media")) return "https://e926.net";
+    if (hostMatches(h, "derpicdn.net") || hostMatches(h, "derpibooru.org")) return "https://derpibooru.org";
     return "";
   } catch {
     return "";
   }
 }
 
-export function refererHeadersFor(url, refOverride = "") {
+function refererHeadersFor(url, refOverride = "") {
   let refFinal = "";
   if (refOverride) {
     try {
@@ -76,5 +80,16 @@ export function refererHeadersFor(url, refOverride = "") {
   return hdr;
 }
 
-export const BOORU_UA =
-  "Mozilla/5.0 (Linux; Android 12; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119 Mobile Safari/537.36";
+const BOORU_UA =
+  "Mozilla/5.0 StreamBooru/1.1 (+https://github.com/Atlas-Commons/StreamBooru)";
+
+module.exports = {
+  ALLOWED_HOSTS,
+  hostAllowed,
+  hostMatches,
+  isBooruHostAllowed,
+  isProxyAllowed,
+  refererFor,
+  refererHeadersFor,
+  BOORU_UA
+};

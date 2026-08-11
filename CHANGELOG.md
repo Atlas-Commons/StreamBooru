@@ -3,6 +3,47 @@
 All notable changes to this project will be documented in this file.
 The format roughly follows Keep a Changelog, and dates are in YYYY-MM-DD.
 
+## [v1.1.0-beta.2] — 2026-08-11
+
+### Highlights
+* **e621 video playback:** WebM/MP4 media now streams through a range-aware proxy instead of repeatedly reloading or downloading the entire file before playback.
+* **Downloads repaired:** Browser, Android, and Electron downloads now use platform-appropriate streaming paths and report upstream HTTP failures.
+* **Forgejo-first releases:** CI, release builds, Android signing, and package publication now run on the Atlas Commons Forgejo infrastructure with GitHub retained as a mirror.
+
+### Added
+* Native e621 fetching and normalization in the hosted web and Android client, including optional login/API-key parameters.
+* HTTP byte-range forwarding and response-header preservation for `/mediaproxy`.
+* Media regression tests covering authenticated e621 requests, video normalization, range headers, MIME types, and attachment filenames.
+* Local sync-server integration tests and a packaged Electron startup smoke test in both CI systems.
+* Loading, buffering, recovery, download-progress, and error feedback in the media lightbox.
+* A media-first gallery redesign with a clearer feed header, live result counts, one-click refresh, compact card actions, keyboard search, and improved responsive/accessibility states.
+* Per-site Gelbooru search dialect selection, with automatic Rule34.xxx detection.
+* Zoom and pan controls for full-size images in the lightbox.
+* Forgejo release builds for Linux, Windows, Android, and Flatpak, plus Forgejo package publication.
+
+### Changed
+* Full-size videos no longer force looping, and codec detection is advisory rather than blocking playback.
+* Browser downloads use the same-origin media proxy directly; Android downloads stream natively to app-owned external storage without an unnecessary public-storage permission prompt.
+* Electron downloads wait for the file stream to finish, reject non-2xx responses, and remove partial files after failures.
+* e621/e926 media hosts use the correct referer and a project-identifying user agent.
+* Updated the low-risk transitive dependencies from PRs #14, #15, #16, and #21.
+* Upgraded Electron 35 to supported Electron 43 and Electron Builder 24 to 26, superseding the already-EOL Electron 39 update proposed by PR #22.
+* Upgraded Capacitor 6 to 8 and replaced the legacy community HTTP downloader with the official File Transfer plugin.
+* Consolidated desktop networking and hosted/Android booru normalization into shared, independently testable modules.
+* Restyled the gallery with flatter surfaces, restrained colour, simpler controls, and less decorative motion.
+
+### Fixed
+* Feed cards prefer display-sized sample images over tiny booru thumbnails, keeping previews sharp while retaining lightweight fallbacks.
+* **#23:** Video playback no longer calls `load()` again from `loadeddata`/`canplay`, which could leave the player in a reload loop.
+* e621 video posts consistently select a video URL instead of falling back to a static sample image.
+* Hosted and Android e621 sites no longer fall through to the Danbooru adapter.
+* Media proxy responses preserve `206`, `Content-Range`, `Content-Length`, `Content-Type`, validators, and download disposition.
+* Hotlink-protected e621/e926 media and grid previews have reliable proxy fallbacks.
+* Proxy host checks now reject lookalike domains and revalidate redirects; rate, concurrency, and response-size limits bound proxy resource use.
+* Credential-bearing query strings are redacted from request logs, unsafe external-link protocols are rejected, and production refuses the development JWT secret.
+* Android trusts system certificate authorities only, disallows cleartext traffic and backups, and targets API 36 with Java 21.
+* Global Gelbooru advanced searches translate OR groups from `{ tag_a ~ tag_b }` to Rule34.xxx's `( tag_a ~ tag_b )` syntax, use Rule34's API host, and preserve explicit rating filters.
+
 ## [v1.1.0-beta.1] — 2026-05-22
 
 ### Highlights

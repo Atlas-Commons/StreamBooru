@@ -25,8 +25,12 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
+      - run: npm run test:media
       - run: npm run test:server
       - run: npm run test:tags
+      - name: Install packaged-app test dependencies
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+      - run: xvfb-run -a npm run test:package
 
   dco:
     name: DCO sign-off

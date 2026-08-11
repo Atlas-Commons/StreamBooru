@@ -9,12 +9,14 @@
   <link rel="stylesheet" href="./mobile.css" media="(max-width: 900px)" />
 </head>
 <body>
+  <script src="./js/query-dialect.js"></script>
+  <script src="./js/booru-client.js"></script>
   <script src="./js/platform.js"></script>
 
   <header class="topbar">
     <div class="left">
-      <h1>StreamBooru</h1>
       <button id="menu-toggle" class="hamburger" aria-label="Open menu" aria-expanded="false" aria-controls="menu-panel">☰</button>
+      <h1>StreamBooru</h1>
     </div>
 
     <div class="center">
@@ -26,16 +28,16 @@
       </div>
 
       <form id="search-form" class="search" autocomplete="off">
-        <input id="tag-search" type="text" placeholder="Search tags (space-separated, e.g., 1girl blue_hair)" />
+        <input id="tag-search" type="text" placeholder="Search tags…" aria-label="Search tags" />
         <button id="tag-search-btn" type="submit">Search</button>
-        <button id="tag-clear-btn" type="button" title="Clear search">✕</button>
+        <button id="tag-clear-btn" type="button" title="Clear search" aria-label="Clear search">✕</button>
       </form>
     </div>
 
     <div class="right">
-      <button id="btn-download-all" class="accent" title="Left-click to download all. Right-click or Shift/Alt+click for options.">Download All</button>
-      <button id="btn-manage-sites" class="ghost">Manage Sites</button>
-      <button id="btn-account" class="ghost">Account</button>
+      <button id="btn-download-all" class="accent" title="Download all visible results. Shift-click for naming options.">Download All</button>
+      <button id="btn-manage-sites" class="ghost" title="Manage sources">Sites</button>
+      <button id="btn-account" class="ghost" title="Account and sync">Account</button>
     </div>
   </header>
 
@@ -65,9 +67,20 @@
     </div>
   </nav>
 
-  <main id="feed" class="grid"></main>
+  <section class="feed-heading" aria-labelledby="view-title">
+    <div>
+      <h2 id="view-title">New</h2>
+      <p id="view-description">Latest posts from your configured sources</p>
+    </div>
+    <div class="feed-tools">
+      <span id="result-count" class="result-count" aria-live="polite">Loading posts…</span>
+      <button id="btn-refresh-feed" class="icon-button" type="button" title="Refresh this feed">Refresh</button>
+    </div>
+  </section>
 
-  <div id="loading" class="loading hidden">Loading…</div>
+  <main id="feed" class="grid" aria-live="polite"></main>
+
+  <div id="loading" class="loading hidden" role="status" aria-live="polite">Loading…</div>
 
   <div id="site-manager" class="modal hidden" aria-hidden="true" tabindex="-1"></div>
   <div id="account-manager" class="modal hidden" aria-hidden="true" tabindex="-1"></div>

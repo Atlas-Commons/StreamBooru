@@ -1,6 +1,6 @@
 {
   "name": "streambooru",
-  "version": "1.1.0-beta.1",
+  "version": "1.1.0-beta.2",
   "description": "StreamBooru – Electron app to browse multiple booru sites with New and Popular feeds, merged across sources.",
   "main": "electron/main.js",
   "author": {
@@ -24,20 +24,23 @@
     "android:build": "cd android && ./gradlew assembleDebug",
     "android:release": "cd android && ./gradlew bundleRelease",
     "test:tags": "node scripts/test-query-tags.js",
-    "test:server": "node scripts/test-server-smoke.js"
+    "test:media": "node scripts/test-media.js",
+    "test:server": "node scripts/test-server-local.js",
+    "test:server:deployed": "node scripts/test-server-smoke.js",
+    "test:package": "node scripts/test-packaged-app.js"
   },
   "devDependencies": {
-    "@capacitor/cli": "^6.2.1",
-    "electron": "^35.7.5",
-    "electron-builder": "^24.13.3"
+    "@capacitor/cli": "8.4.2",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3"
   },
   "dependencies": {
-    "@capacitor-community/http": "^1.4.1",
-    "@capacitor/android": "^6.2.1",
-    "@capacitor/app": "^6.0.2",
-    "@capacitor/browser": "^6.0.5",
-    "@capacitor/core": "^6.2.1",
-    "@capacitor/filesystem": "^6.0.3",
-    "@capacitor/share": "^6.0.3"
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/browser": "^8.0.4",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/file-transfer": "^2.0.4",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capacitor/share": "^8.0.1"
   }
 }

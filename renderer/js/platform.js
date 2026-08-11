@@ -7,6 +7,12 @@
   const C = typeof window !== 'undefined' ? window.Capacitor : undefined;
   const isAndroid = () => !!C && typeof C.getPlatform === 'function' && C.getPlatform() === 'android';
   const isWebBrowser = () => !isElectron() && !isAndroid();
+  function safeHttpUrl(value) {
+    try {
+      const url = new URL(String(value || ''));
+      return url.protocol === 'https:' || url.protocol === 'http:' ? url.toString() : '';
+    } catch { return ''; }
+  }
   function defaultOriginBase() {
     if (typeof window === 'undefined' || !window.location?.origin) return '';
     const origin = window.location.origin.replace(/\/+$/, '');
@@ -44,7 +50,7 @@
   }
 
   // native HTTP
-  const UA = 'Mozilla/5.0 (Linux; Android 12; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119 Mobile Safari/537.36';
+  const UA = 'Mozilla/5.0 StreamBooru/1.1 (+https://github.com/Atlas-Commons/StreamBooru)';
   function getHttp() { return C?.Plugins?.CapacitorHttp || C?.Plugins?.Http || null; }
   function originFrom(url) { try { return new URL(url).origin; } catch { return ''; } }
   const b64 = (s) => { try { return typeof btoa === 'function' ? btoa(s) : Buffer.from(s, 'utf8').toString('base64'); } catch { return s; } };
@@ -86,9 +92,9 @@
 
   // HTTP helpers
   function webProxyBase() {
-    if (!isWebBrowser()) return '';
+    if (isElectron()) return '';
     const acc = typeof accLoad === 'function' ? accLoad() : {};
-    return accGetBase(acc) || defaultOriginBase();
+    return accGetBase(acc) || defaultOriginBase() || (isAndroid() ? 'https://streambooru.ecchibooru.uk' : '');
   }
   async function fetchViaBooruProxy(url, accept) {
     const base = webProxyBase();
@@ -219,20 +225,21 @@
   }
 
   // Image fetch helpers (Referer/Origin for hotlinking)
+  const hostMatches = (host, domain) => host === domain || host.endsWith(`.${domain}`);
   function refererFor(url) {
     try {
       const h = new URL(url).hostname.toLowerCase();
-      if (h.endsWith('donmai.us')) return 'https://danbooru.donmai.us';
-      if (h.endsWith('yande.re')) return 'https://yande.re';
-      if (h.endsWith('konachan.com')) return 'https://konachan.com';
-      if (h.endsWith('konachan.net')) return 'https://konachan.net';
-      if (h.endsWith('hypnohub.net')) return 'https://hypnohub.net';
-      if (h.endsWith('tbib.org')) return 'https://tbib.org';
-      if (h.endsWith('gelbooru.com')) return 'https://gelbooru.com';
-      if (h.endsWith('safebooru.org')) return 'https://safebooru.org';
-      if (h.endsWith('e621.net') || h.endsWith('e621.media')) return 'https://e621.net';
-      if (h.endsWith('e926.net') || h.endsWith('e926.media')) return 'https://e926.net';
-      if (h.endsWith('derpicdn.net') || h.endsWith('derpibooru.org')) return 'https://derpibooru.org';
+      if (hostMatches(h, 'donmai.us')) return 'https://danbooru.donmai.us';
+      if (hostMatches(h, 'yande.re')) return 'https://yande.re';
+      if (hostMatches(h, 'konachan.com')) return 'https://konachan.com';
+      if (hostMatches(h, 'konachan.net')) return 'https://konachan.net';
+      if (hostMatches(h, 'hypnohub.net')) return 'https://hypnohub.net';
+      if (hostMatches(h, 'tbib.org')) return 'https://tbib.org';
+      if (hostMatches(h, 'gelbooru.com')) return 'https://gelbooru.com';
+      if (hostMatches(h, 'safebooru.org')) return 'https://safebooru.org';
+      if (hostMatches(h, 'e621.net') || hostMatches(h, 'e621.media')) return 'https://e621.net';
+      if (hostMatches(h, 'e926.net') || hostMatches(h, 'e926.media')) return 'https://e926.net';
+      if (hostMatches(h, 'derpicdn.net') || hostMatches(h, 'derpibooru.org')) return 'https://derpibooru.org';
       return '';
     } catch { return ''; }
   }
@@ -240,9 +247,9 @@
     try {
       const h = new URL(url).hostname.toLowerCase();
       return (
-        h.endsWith('donmai.us') ||
-        h === 'files.yande.re' ||
-        h === 'konachan.com' || h === 'konachan.net'
+        hostMatches(h, 'donmai.us') ||
+        hostMatches(h, 'yande.re') ||
+        hostMatches(h, 'konachan.com') || hostMatches(h, 'konachan.net')
       );
     } catch { return false; }
   }
@@ -309,13 +316,19 @@
     return b64(bin);
   }
   function guessMime(url) {
-    const u = (url || '').toLowerCase();
+    let u = String(url || '').toLowerCase();
+    try { u = new URL(u, 'https://x/').pathname.toLowerCase(); } catch {}
     if (u.endsWith('.png')) return 'image/png';
     if (u.endsWith('.webp')) return 'image/webp';
     if (u.endsWith('.gif')) return 'image/gif';
-    if (u.endsWith('.mp4')) return 'video/mp4';
+    if (u.endsWith('.mp4') || u.endsWith('.m4v')) return 'video/mp4';
     if (u.endsWith('.webm')) return 'video/webm';
     return 'image/jpeg';
+  }
+
+  function isVideoMediaUrl(url) {
+    const mime = guessMime(url);
+    return mime === 'video/mp4' || mime === 'video/webm';
   }
 
   // Normalize base URL (for stable favourite keys)
@@ -362,243 +375,7 @@
   async function favKeys() { return [...favLoadKeys()]; }
   async function favList() { const map = favLoadMap(); const out = []; for (const v of map.values()) { try { out.push(JSON.parse(v)); } catch {} } return out; }
 
-  // Rating/helpers for fetching/normalization
-  function ensureHttps(url) { try { const u = new URL(url); if (u.protocol === 'http:') u.protocol = 'https:'; return u.toString(); } catch { return url; } }
-  function splitTags(s) { return String(s || '').split(/\s+/).map((t) => t.trim()).filter(Boolean); }
-  function toISO(dt) {
-    try {
-      if (!dt) return '';
-      if (typeof dt === 'number') return new Date(dt * 1000).toISOString();
-      const d = new Date(dt);
-      return isNaN(d.getTime()) ? '' : d.toISOString();
-    } catch { return ''; }
-  }
-  function ratingToTag(rating) {
-    switch ((rating || '').toLowerCase()) {
-      case 'safe': return 'rating:safe';
-      case 'questionable': return 'rating:questionable';
-      case 'explicit': return 'rating:explicit';
-      default: return '';
-    }
-  }
-  function buildQueryTags(site, ...extras) {
-    const parts = [ratingToTag(site?.rating), String(site?.tags || '').trim(), ...(extras || [])]
-      .filter(Boolean)
-      .join(' ')
-      .trim()
-      .split(/\s+/);
-    const seen = new Set();
-    const out = [];
-    for (const t of parts) if (t && !seen.has(t)) { seen.add(t); out.push(t); }
-    return out.join(' ');
-  }
-  function hasRatingSpecifier(tags) { return /\brating\s*:(?:safe|questionable|explicit|any|[sqe])\b/i.test(String(tags || '')); }
-  function addRatingToken(tags, ratingVal) {
-    const token = ratingVal === 'questionable' ? 'rating:questionable'
-                : ratingVal === 'explicit'     ? 'rating:explicit'
-                :                                 'rating:safe';
-    return tags ? `${token} ${tags}` : token;
-  }
-  function canonRating(r) {
-    const t = String(r || '').toLowerCase();
-    if (t === 'g' || t === 'general') return 's';
-    if (t.startsWith('s')) return 's';
-    if (t.startsWith('q') || t === 'sensitive' || t === 'mature') return 'q';
-    if (t.startsWith('e')) return 'e';
-    return '';
-  }
-
-  // Normalizers
-  function normalizeDanbooru(p, site) {
-    const base = site?.baseUrl || '';
-    return {
-      id: p.id,
-      score: p.score ?? 0,
-      favorites: p.fav_count ?? p.favorites ?? 0,
-      rating: p.rating || '',
-      width: p.image_width ?? p.width ?? 0,
-      height: p.image_height ?? p.height ?? 0,
-      created_at: p.created_at || p.created_at_s || '',
-      tags: splitTags(p.tag_string || ''),
-      file_url: p.file_url ? ensureHttps(p.file_url) : '',
-      sample_url: p.large_file_url ? ensureHttps(p.large_file_url) : (p.preview_file_url ? ensureHttps(p.preview_file_url) : ''),
-      preview_url: p.preview_file_url ? ensureHttps(p.preview_file_url) : '',
-      post_url: `${base.replace(/\/+$/, '')}/posts/${p.id}`,
-      site
-    };
-  }
-  function normalizeMoebooru(p, site) {
-    const base = site?.baseUrl || '';
-    return {
-      id: p.id,
-      score: p.score ?? 0,
-      favorites: p.fav_count ?? p.favorites ?? 0,
-      rating: p.rating || '',
-      width: p.width ?? 0,
-      height: p.height ?? 0,
-      created_at: toISO(p.created_at),
-      tags: splitTags(p.tags || ''),
-      file_url: p.file_url ? ensureHttps(p.file_url) : '',
-      sample_url: p.sample_url ? ensureHttps(p.sample_url) : '',
-      preview_url: p.preview_url ? ensureHttps(p.preview_url) : '',
-      post_url: `${base.replace(/\/+$/, '')}/post/show/${p.id}`,
-      site
-    };
-  }
-  function normalizeGelbooru(p, site) {
-    const base = site?.baseUrl || '';
-    const file = p.file_url || p.fileURL || p.source || '';
-    const preview = p.preview_url || p.previewURL || '';
-    const sample = p.sample_url || p.sampleURL || '';
-    const id = p.id || p.post_id || p.hash || '';
-    return {
-      id,
-      score: Number(p.score ?? 0) || 0,
-      favorites: Number(p.favorite_count ?? p.fav_count ?? p.favorites ?? 0) || 0,
-      rating: p.rating || '',
-      width: Number(p.width ?? 0) || 0,
-      height: Number(p.height ?? 0) || 0,
-      created_at: toISO(p.created_at || p.created_at_s),
-      tags: splitTags(p.tags || ''),
-      file_url: file ? ensureHttps(file) : '',
-      sample_url: sample ? ensureHttps(sample) : '',
-      preview_url: preview ? ensureHttps(preview) : '',
-      post_url: `${base.replace(/\/+$/, '')}/index.php?page=post&s=view&id=${encodeURIComponent(id)}`,
-      site
-    };
-  }
-
-  // Per-site fetchers
-  function cred(site, key) { return (site?.credentials && site.credentials[key]) || site?.[key] || ''; }
-  function withDanbooruAuth(params, site) {
-    const login = cred(site, 'login'); const apiKey = cred(site, 'api_key');
-    if (login && apiKey) { params.set('login', login); params.set('api_key', apiKey); }
-  }
-  function withGelbooruAuth(params, site) {
-    const userId = cred(site, 'user_id'); const apiKey = cred(site, 'api_key');
-    if (userId && apiKey) { params.set('user_id', userId); params.set('api_key', apiKey); }
-  }
-  async function fetchDanbooru({ baseUrl, tags, page, limit, site }) {
-    const params = new URLSearchParams();
-    if (limit) params.set('limit', String(limit));
-    if (tags) params.set('tags', tags);
-    if (page) params.set('page', String(page));
-    withDanbooruAuth(params, site);
-    const url = `${baseUrl.replace(/\/+$/, '')}/posts.json?${params.toString()}`;
-    try {
-      const json = await httpGetJSON(url);
-      return Array.isArray(json) ? json : [];
-    } catch {
-      try {
-        const r = await fetch(url, { headers: { Accept: 'application/json' } });
-        if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
-        const json = await r.json();
-        return Array.isArray(json) ? json : [];
-      } catch {
-        return [];
-      }
-    }
-  }
-  async function fetchMoebooru({ baseUrl, tags, page, limit }) {
-    const params = new URLSearchParams();
-    if (limit) params.set('limit', String(limit));
-    if (tags) params.set('tags', tags);
-    if (page) params.set('page', String(page));
-    const url = `${baseUrl.replace(/\/+$/, '')}/post.json?${params.toString()}`;
-    const json = await httpGetJSON(url);
-    return Array.isArray(json) ? json : [];
-  }
-  async function parseGelbooruXml(xmlText) {
-    try {
-      const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
-      const nodes = doc.getElementsByTagName('post');
-      const out = [];
-      for (let i = 0; i < nodes.length; i++) {
-        const n = nodes[i]; const attrs = {};
-        for (let j = 0; j < n.attributes.length; j++) { const a = n.attributes[j]; attrs[a.name] = a.value; }
-        out.push(attrs);
-      }
-      return out;
-    } catch { return []; }
-  }
-  async function fetchGelbooru({ baseUrl, tags, page, limit, site }) {
-    const base = baseUrl.replace(/\/+$/, '');
-    const params = new URLSearchParams();
-    params.set('page', 'dapi'); params.set('s', 'post'); params.set('q', 'index'); params.set('json', '1');
-    if (limit) params.set('limit', String(limit));
-    if (tags) params.set('tags', tags);
-    if (page) params.set('pid', String((page - 1) || 0));
-    withGelbooruAuth(params, site);
-    const jsonUrl = `${base}/index.php?${params.toString()}`;
-    try {
-      const json = await httpGetJSON(jsonUrl);
-      return Array.isArray(json) ? json : (Array.isArray(json?.post) ? json.post : []);
-    } catch {
-      try {
-        params.delete('json');
-        const xmlUrl = `${base}/index.php?${params.toString()}`;
-        const xml = await httpGetText(xmlUrl);
-        return await parseGelbooruXml(xml);
-      } catch (e2) { throw e2; }
-    }
-  }
-  function popularTagFor(siteType) {
-    if (siteType === 'danbooru') return 'order:rank';
-    if (siteType === 'moebooru') return 'order:score';
-    if (siteType === 'gelbooru') return 'sort:score';
-    return 'order:rank';
-  }
-
-  // Fetch across a booru site (web/mobile)
-  async function fetchBooruWeb(payload) {
-    const { site, viewType, cursor, limit = 40, search = '' } = payload || {};
-    if (!site || !site.baseUrl) return { posts: [], nextCursor: null };
-    const baseUrl = site.baseUrl;
-    const page = typeof cursor === 'number' && cursor > 0 ? cursor : 1;
-
-    const extras = [];
-    if (viewType === 'popular') extras.push(popularTagFor(site.type));
-    if ((search || '').trim()) extras.push((search || '').trim());
-    let tags = buildQueryTags(site, ...extras);
-
-    const ratingPref = String(site.rating || '').toLowerCase();
-    let injectedRating = '';
-    if (!hasRatingSpecifier(tags) && ratingPref && ratingPref !== 'any') {
-      tags = addRatingToken(tags, ratingPref);
-      injectedRating = ratingPref.startsWith('q') ? 'q' : ratingPref.startsWith('e') ? 'e' : 's';
-    }
-
-    let raw = [];
-    try {
-      if (site.type === 'danbooru') {
-        raw = await fetchDanbooru({ baseUrl, tags, page, limit: Math.min(30, limit), site });
-        if (viewType === 'popular' && Array.isArray(raw) && raw.length === 0) {
-          const alt = tags.includes('order:rank') ? tags.replace('order:rank', 'order:score') : `order:score ${tags}`;
-          raw = await fetchDanbooru({ baseUrl, tags: alt.trim(), page, limit: Math.min(30, limit), site });
-        }
-      } else if (site.type === 'moebooru') {
-        raw = await fetchMoebooru({ baseUrl, tags, page, limit });
-      } else if (site.type === 'gelbooru') {
-        raw = await fetchGelbooru({ baseUrl, tags, page, limit, site });
-      } else {
-        raw = await fetchDanbooru({ baseUrl, tags, page, limit: Math.min(30, limit), site });
-      }
-    } catch { raw = []; }
-
-    let norm = (raw || []).map((p) => {
-      try {
-        if (site.type === 'danbooru') return normalizeDanbooru(p, site);
-        if (site.type === 'moebooru') return normalizeMoebooru(p, site);
-        if (site.type === 'gelbooru') return normalizeGelbooru(p, site);
-        return normalizeDanbooru(p, site);
-      } catch { return null; }
-    }).filter(Boolean);
-
-    if (injectedRating) norm = norm.filter((p) => canonRating(p.rating) === injectedRating);
-
-    const nextCursor = norm.length >= Math.max(1, limit) ? page + 1 : null;
-    return { posts: norm, nextCursor };
-  }
+  const { fetchBooruWeb } = window.createBooruClient({ httpGetJSON, httpGetText, isVideoMediaUrl });
 
   // proxy image with LRU cache and server fallback (CapacitorHttp to bypass CORS)
   async function proxyImage(input) {
@@ -687,8 +464,15 @@
       });
       const status = res.status ?? 0;
       if (status < 200 || status >= 300) throw new Error(`HTTP ${status}`);
-      const mime = guessMime(url);
-      return new Blob([res.data], { type: mime });
+      const mime = res.headers?.['content-type'] || res.headers?.['Content-Type'] || guessMime(url);
+      let data = res.data;
+      if (typeof data === 'string') {
+        const binary = atob(data);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        data = bytes;
+      }
+      return new Blob([data], { type: mime });
     }
     const r = await fetch(fetchUrl, { headers: { Accept: 'image/*,video/*,application/octet-stream,*/*' } });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -707,33 +491,77 @@
     setTimeout(() => URL.revokeObjectURL(objUrl), 60_000);
   }
 
+  function triggerUrlDownload(url, filename) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = String(filename || 'download').replace(/[<>:"/\\|?*\x00-\x1F]+/g, '_').slice(0, 200);
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  async function downloadMediaAndroid(url, safeName) {
+    const Filesystem = C?.Plugins?.Filesystem;
+    const FileTransfer = C?.Plugins?.FileTransfer;
+    const fetchUrl = mediaproxyUrl(url, { download: true, filename: safeName }) || url;
+
+    if (Filesystem?.mkdir) {
+      try { await Filesystem.mkdir({ path: 'StreamBooru', directory: 'EXTERNAL', recursive: true }); } catch {}
+    }
+
+    if (FileTransfer?.downloadFile && Filesystem?.getUri) {
+      const destination = await Filesystem.getUri({ path: `StreamBooru/${safeName}`, directory: 'EXTERNAL' });
+      const result = await FileTransfer.downloadFile({
+        url: fetchUrl,
+        path: destination.uri,
+        headers: { Accept: 'image/*,video/*,application/octet-stream,*/*', 'User-Agent': UA },
+        progress: false
+      });
+      return { ok: true, path: result?.path || destination.uri };
+    }
+
+    if (Filesystem?.downloadFile) {
+      const result = await Filesystem.downloadFile({
+        url: fetchUrl,
+        path: `StreamBooru/${safeName}`,
+        directory: 'EXTERNAL',
+        headers: { Accept: 'image/*,video/*,application/octet-stream,*/*', 'User-Agent': UA }
+      });
+      return { ok: true, path: result?.path || '' };
+    }
+
+    const blob = await fetchMediaBlob(url);
+    if (!Filesystem?.writeFile) throw new Error('Filesystem plugin unavailable');
+    const buf = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    const result = await Filesystem.writeFile({
+      path: `StreamBooru/${safeName}`,
+      data: b64(bin),
+      directory: 'EXTERNAL',
+      recursive: true
+    });
+    return { ok: true, path: result?.uri || '' };
+  }
+
   async function downloadMediaWeb({ url, fileName, siteName }) {
     if (isElectron() && window.api?.downloadImage) {
       return window.api.downloadImage({ url, siteName, fileName });
     }
     const safeName = String(fileName || 'download').replace(/[<>:"/\\|?*\x00-\x1F]+/g, '_').slice(0, 200);
     try {
-      const blob = await fetchMediaBlob(url);
-      if (C?.Plugins?.Filesystem?.writeFile) {
-        if (typeof C.Plugins.Filesystem.requestPermissions === 'function') {
-          try {
-            const perm = await C.Plugins.Filesystem.requestPermissions();
-            const ok = perm.publicStorage === 'granted' || perm.publicStorage === 'limited';
-            if (!ok) return { ok: false, error: 'Storage permission denied' };
-          } catch {}
-        }
-        const buf = await blob.arrayBuffer();
-        const bytes = new Uint8Array(buf);
-        let bin = '';
-        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-        await C.Plugins.Filesystem.writeFile({
-          path: `Pictures/StreamBooru/${safeName}`,
-          data: b64(bin),
-          directory: 'EXTERNAL',
-          recursive: true
-        });
-        return { ok: true };
+      if (isAndroid()) {
+        return await downloadMediaAndroid(url, safeName);
       }
+      if (isWebBrowser()) {
+        const downloadUrl = mediaproxyUrl(url, { download: true, filename: safeName });
+        if (!downloadUrl) throw new Error('Media proxy unavailable');
+        triggerUrlDownload(downloadUrl, safeName);
+        return { ok: true, path: '(browser downloads)' };
+      }
+      const blob = await fetchMediaBlob(url);
       await triggerBlobDownload(blob, safeName);
       return { ok: true };
     } catch (e) {
@@ -751,6 +579,21 @@
     if (isWebBrowser() && items.length > 1) {
       const ok = window.confirm(`Download ${items.length} files? Your browser will save them one at a time.`);
       if (!ok) return { ok: false, cancelled: true };
+      const failed = [];
+      let saved = 0;
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        try {
+          const safeName = String(it.fileName || `file_${i}`).replace(/[<>:"/\\|?*\x00-\x1F]+/g, '_').slice(0, 200);
+          const downloadUrl = mediaproxyUrl(it.url, { download: true, filename: safeName });
+          if (!downloadUrl) throw new Error('Media proxy unavailable');
+          triggerUrlDownload(downloadUrl, safeName);
+          saved++;
+        } catch (e) {
+          failed.push({ i, error: String(e?.message || e) });
+        }
+      }
+      return { ok: true, saved, failed, basePath: '(browser downloads)' };
     }
     const concurrency = Number(options.concurrency || 3);
     let index = 0;
@@ -762,8 +605,8 @@
         if (i >= items.length) return;
         const it = items[i];
         try {
-          const blob = await fetchMediaBlob(it.url);
-          await triggerBlobDownload(blob, it.fileName || `file_${i}`);
+          const result = await downloadMediaWeb({ url: it.url, fileName: it.fileName || `file_${i}`, siteName: it.siteName });
+          if (!result?.ok) throw new Error(result?.error || 'Download failed');
           saved++;
         } catch (e) {
           failed.push({ i, error: String(e?.message || e) });
@@ -877,6 +720,7 @@
         base_url,
         rating: String(s.rating || 'safe'),
         tags: String(s.tags || ''),
+        queryDialect: String(s.queryDialect || s.query_dialect || 'auto'),
         order_index: Number(s.order_index ?? idx) || idx,
         credentials: {}
       };
@@ -1065,9 +909,11 @@
 
   // expose
   window.Platform = { isElectron, isAndroid, openExternal: async (url) => {
-    if (isElectron() && window.api?.openExternal) return window.api.openExternal(url);
-    if (C?.Plugins?.Browser?.open) { await C.Plugins.Browser.open({ url }); return true; }
-    window.open(url, '_blank', 'noopener,noreferrer'); return true;
+    const safeUrl = safeHttpUrl(url);
+    if (!safeUrl) return false;
+    if (isElectron() && window.api?.openExternal) return window.api.openExternal(safeUrl);
+    if (C?.Plugins?.Browser?.open) { await C.Plugins.Browser.open({ url: safeUrl }); return true; }
+    window.open(safeUrl, '_blank', 'noopener,noreferrer'); return true;
   }, share: async (opts = {}) => {
     if (C?.Plugins?.Share?.share) { await C.Plugins.Share.share(opts); return true; }
     if (navigator.share) { const { title, text, url } = opts; await navigator.share({ title, text, url }); return true; }

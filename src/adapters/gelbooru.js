@@ -1,4 +1,5 @@
 const { normalizePost, toIsoDate, abs, buildQueryTags } = require('./base');
+const { gelbooruApiBase, queryDialectFor, translateGelbooruQuery } = require('../../renderer/js/query-dialect');
 
 class GelbooruAdapter {
   constructor(httpGetJson, httpGetText) {
@@ -64,6 +65,8 @@ class GelbooruAdapter {
   async fetchNew(site, { cursor, limit = 40, search = '' }) {
     const pid = cursor?.pid || 0;
     const base = site.baseUrl.replace(/\/+$/, '');
+    const apiBase = gelbooruApiBase(base, site);
+    const isRule34 = queryDialectFor(site) === 'rule34';
 
     const mkParams = (tagsStr) => {
       const p = new URLSearchParams();
@@ -73,14 +76,14 @@ class GelbooruAdapter {
       p.set('json', '1');
       p.set('limit', String(Math.min(limit, 100)));
       p.set('pid', String(pid));
-      if (tagsStr) p.set('tags', tagsStr);
+      if (tagsStr) p.set('tags', translateGelbooruQuery(tagsStr, site));
       this.#applyAuth(p, site);
       return p;
     };
 
     // Primary: plain tag search
     let params = mkParams(buildQueryTags(site, search));
-    let url = `${base}/index.php?${params.toString()}`;
+    let url = `${apiBase}/index.php?${params.toString()}`;
     let posts = await this.#fetchJson(url);
 
     const needFallback = (!Array.isArray(posts) || posts.length === 0 || posts.__error);
@@ -88,12 +91,12 @@ class GelbooruAdapter {
     // Fallbacks (JSON)
     if (needFallback && (search || '').trim().length > 0) {
       params = mkParams(buildQueryTags(site, 'sort:score', search));
-      url = `${base}/index.php?${params.toString()}`;
+      url = `${apiBase}/index.php?${params.toString()}`;
       posts = await this.#fetchJson(url);
     }
-    if (!Array.isArray(posts) || posts.length === 0 || posts.__error) {
+    if (!isRule34 && (!Array.isArray(posts) || posts.length === 0 || posts.__error)) {
       params = mkParams(buildQueryTags(site, 'order:score', search));
-      url = `${base}/index.php?${params.toString()}`;
+      url = `${apiBase}/index.php?${params.toString()}`;
       posts = await this.#fetchJson(url);
     }
 
@@ -129,6 +132,8 @@ class GelbooruAdapter {
   async fetchPopular(site, { cursor, limit = 40, search = '' }) {
     const pid = cursor?.pid || 0;
     const base = site.baseUrl.replace(/\/+$/, '');
+    const apiBase = gelbooruApiBase(base, site);
+    const isRule34 = queryDialectFor(site) === 'rule34';
     const params = new URLSearchParams();
     params.set('page', 'dapi');
     params.set('s', 'post');
@@ -136,15 +141,15 @@ class GelbooruAdapter {
     params.set('json', '1');
     params.set('limit', String(Math.min(limit, 100)));
     params.set('pid', String(pid));
-    params.set('tags', buildQueryTags(site, 'sort:score', search));
+    params.set('tags', translateGelbooruQuery(buildQueryTags(site, 'sort:score', search), site));
     this.#applyAuth(params, site);
 
-    let url = `${base}/index.php?${params.toString()}`;
+    let url = `${apiBase}/index.php?${params.toString()}`;
     let posts = await this.#fetchJson(url);
 
-    if (!Array.isArray(posts) || posts.length === 0 || posts.__error) {
-      params.set('tags', buildQueryTags(site, 'order:score', search));
-      url = `${base}/index.php?${params.toString()}`;
+    if (!isRule34 && (!Array.isArray(posts) || posts.length === 0 || posts.__error)) {
+      params.set('tags', translateGelbooruQuery(buildQueryTags(site, 'order:score', search), site));
+      url = `${apiBase}/index.php?${params.toString()}`;
       posts = await this.#fetchJson(url);
     }
     if (!Array.isArray(posts) || posts.length === 0 || posts.__error) {

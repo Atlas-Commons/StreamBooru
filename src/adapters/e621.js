@@ -20,6 +20,15 @@ class E621Adapter {
     return out.join(' ');
   }
 
+  #withAuth(params, site) {
+    const login = String(site?.credentials?.login || site?.login || '').trim();
+    const apiKey = String(site?.credentials?.api_key || site?.api_key || '').trim();
+    if (login && apiKey) {
+      params.set('login', login);
+      params.set('api_key', apiKey);
+    }
+  }
+
   #norm(site, p) {
     const base = (site.baseUrl || '').replace(/\/+$/, '');
     const score = (p?.score && typeof p.score === 'object') ? (p.score.total ?? 0) : (p?.score ?? 0);
@@ -62,6 +71,7 @@ class E621Adapter {
     params.set('limit', String(Math.min(limit, 320)));
     const tags = this.#buildTags(site, 'order:id_desc ' + (search || ''));
     if (tags) params.set('tags', tags);
+    this.#withAuth(params, site);
     const beforeId = cursor?.before_id;
     if (beforeId) params.set('page', `b${beforeId}`);
     const url = `${base}/posts.json?${params.toString()}`;
@@ -81,6 +91,7 @@ class E621Adapter {
     params.set('page', String(page));
     const tags = this.#buildTags(site, 'order:score ' + (search || ''));
     if (tags) params.set('tags', tags);
+    this.#withAuth(params, site);
     const url = `${base}/posts.json?${params.toString()}`;
     const data = await this.httpGetJson(url, { Accept: 'application/json' });
     const posts = Array.isArray(data?.posts) ? data.posts : Array.isArray(data) ? data : [];

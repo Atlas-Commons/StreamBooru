@@ -244,12 +244,12 @@ jobs:
           npx cap sync android
       - name: Setup Android SDK
         run: bash scripts/ci/setup-android-sdk.sh
-      - name: Setup Java 17
+      - name: Setup Java 21
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq
-          apt-get install -y -qq openjdk-17-jdk
-          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> "$GITHUB_ENV"
+          apt-get install -y -qq openjdk-21-jdk
+          echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
       - name: Make Gradle wrapper executable
         working-directory: android
         run: chmod +x gradlew

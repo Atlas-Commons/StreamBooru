@@ -101,6 +101,7 @@
       type: site.type || 'danbooru',
       rating: site.rating || 'safe',
       tags: stripRatingTokens(site.tags || ''),
+      queryDialect: site.queryDialect || site.query_dialect || 'auto',
       credentials: { ...(site.credentials || {}) }
     };
 
@@ -175,6 +176,27 @@
 
     line.appendChild(tags);
     line.appendChild(picker);
+
+    const dialect = document.createElement('select');
+    dialect.title = 'Advanced-search syntax used by this Gelbooru-compatible site';
+    [
+      { value: 'auto', label: 'Syntax: Auto' },
+      { value: 'gelbooru', label: 'Syntax: Gelbooru' },
+      { value: 'rule34', label: 'Syntax: Rule34.xxx' }
+    ].forEach(({ value, label }) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      option.selected = s.queryDialect === value;
+      dialect.appendChild(option);
+    });
+    line.appendChild(dialect);
+    const updateDialectVisibility = () => {
+      const visible = s.type === 'gelbooru';
+      dialect.hidden = !visible;
+      line.classList.toggle('has-dialect', visible);
+    };
+    updateDialectVisibility();
 
     const actions = document.createElement('div');
     actions.className = 'actions-row';
@@ -368,13 +390,14 @@
       onChange(idx, { ...s });
     };
 
-    [name, baseUrl, type, rating, tags].forEach((el) => {
+    [name, baseUrl, type, rating, tags, dialect].forEach((el) => {
       el.addEventListener('change', () => {
         s.name = name.value.trim();
         s.baseUrl = baseUrl.value.trim();
         s.type = type.value;
         s.rating = rating.value;
         s.tags = stripRatingTokens(tags.value);
+        s.queryDialect = dialect.value;
         if (el === type) {
           while (picker.firstChild) picker.removeChild(picker.firstChild);
           const dash2 = document.createElement('option');
@@ -388,6 +411,7 @@
             picker.appendChild(opt);
           });
           rebuildAuth();
+          updateDialectVisibility();
         }
         emitChange();
       });
@@ -441,7 +465,7 @@
       addBtn.textContent = 'Add Site';
       addBtn.className = 'btn-small';
       addBtn.addEventListener('click', () => {
-        sites.push({ name: 'New Site', type: 'danbooru', baseUrl: '', rating: 'safe', tags: '', credentials: {} });
+        sites.push({ name: 'New Site', type: 'danbooru', baseUrl: '', rating: 'safe', tags: '', queryDialect: 'auto', credentials: {} });
         rerenderList();
       });
       addRow.appendChild(addBtn);
@@ -490,6 +514,7 @@
               type: s.type || 'danbooru',
               rating: s.rating || 'any',
               tags: stripRatingTokens(s.tags || ''),
+              queryDialect: s.queryDialect || s.query_dialect || 'auto',
               credentials: s.credentials || {}
             }));
           await onSave({ sites: sanitized });

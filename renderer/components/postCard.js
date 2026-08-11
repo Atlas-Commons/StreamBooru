@@ -4,6 +4,19 @@
   const isElectron = () => !!(window.Platform?.isElectron?.());
   const isAndroid = () => !!(window.Platform?.isAndroid?.());
   const isWebBrowser = () => !isElectron() && !isAndroid();
+  const hostMatches = (host, domain) => host === domain || host.endsWith(`.${domain}`);
+
+  if (!window.__streambooruCardMenuDismiss) {
+    window.__streambooruCardMenuDismiss = true;
+    document.addEventListener('pointerdown', (event) => {
+      document.querySelectorAll('.card-more[open]').forEach((menu) => {
+        if (!menu.contains(event.target)) menu.removeAttribute('open');
+      });
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') document.querySelectorAll('.card-more[open]').forEach((menu) => menu.removeAttribute('open'));
+    });
+  }
 
   const isVideoUrl = (u) => {
     try { const p = new URL(u, 'https://x/').pathname.toLowerCase(); return /\.(mp4|webm|mov|m4v)$/i.test(p); }
@@ -13,24 +26,22 @@
   function isHotlinkHost(u) {
     try {
       const h = new URL(u).hostname.toLowerCase();
-      return (
-        h.endsWith('donmai.us') ||
-        h === 'files.yande.re' || h.endsWith('yande.re') ||
-        h === 'konachan.com' || h === 'konachan.net' ||
-        h.endsWith('e621.net') || h.endsWith('e926.net') ||
-        h.endsWith('e621.media') || h.endsWith('e926.media') ||
-        h.endsWith('derpibooru.org') || h.endsWith('derpicdn.net') ||
-        h.endsWith('gelbooru.com') || h.endsWith('safebooru.org') ||
-        h.endsWith('rule34.xxx') || h.endsWith('realbooru.com') || h.endsWith('xbooru.com') ||
-        h.endsWith('tbib.org') || h.endsWith('hypnohub.net')
-      );
+      return ['donmai.us', 'yande.re', 'konachan.com', 'konachan.net', 'e621.net', 'e926.net',
+        'e621.media', 'e926.media', 'derpibooru.org', 'derpicdn.net', 'gelbooru.com',
+        'safebooru.org', 'rule34.xxx', 'realbooru.com', 'xbooru.com', 'tbib.org',
+        'hypnohub.net'].some((domain) => hostMatches(h, domain));
     } catch { return false; }
   }
 
-  const thumbCandidates = (post) =>
-    [post.preview_url, post.sample_url, post.file_url]
+  // Booru preview images are commonly only 150–300px wide. Prefer the site's
+  // display-sized sample so cards stay sharp, then retain lightweight fallbacks.
+  const thumbCandidates = (post) => {
+    const seen = new Set();
+    return [post.sample_url, post.preview_url, post.file_url]
       .filter(Boolean)
-      .filter((u) => !isVideoUrl(u));
+      .filter((url) => !isVideoUrl(url))
+      .filter((url) => !seen.has(url) && seen.add(url));
+  };
 
   const isVideoPost = (post) =>
     !!post.is_video || isVideoUrl(post.file_url || '') || isVideoUrl(post.sample_url || '');
@@ -173,40 +184,84 @@
     const wrap = document.createElement('div');
     wrap.className = 'actions';
 
-    const btnOpenPost = document.createElement('button');
-    btnOpenPost.textContent = 'Open Post';
-    btnOpenPost.addEventListener('click', () => openExternal(post.post_url));
-
     const mediaUrl = post.file_url || post.sample_url || post.preview_url || '';
-    const btnOpenMedia = document.createElement('button');
-    btnOpenMedia.textContent = 'Open Media';
-    btnOpenMedia.addEventListener('click', () => openExternal(mediaUrl));
-
     const btnFav = document.createElement('button');
-    btnFav.textContent = window.isLocalFavorite(post) ? '♥ Saved' : '♥ Save';
+    btnFav.className = 'action-save';
+    const updateFavoriteButton = () => {
+      const saved = window.isLocalFavorite(post);
+      btnFav.textContent = saved ? 'Saved' : 'Save';
+      btnFav.setAttribute('aria-pressed', String(saved));
+      btnFav.title = saved ? 'Remove from favourites' : 'Save to favourites';
+    };
+    updateFavoriteButton();
     btnFav.addEventListener('click', async () => {
+      btnFav.disabled = true;
       await window.toggleLocalFavorite(post);
-      btnFav.textContent = window.isLocalFavorite(post) ? '♥ Saved' : '♥ Save';
+      updateFavoriteButton();
+      btnFav.disabled = false;
     });
 
     const btnDownload = document.createElement('button');
+    btnDownload.className = 'action-download';
     btnDownload.textContent = 'Download';
+    btnDownload.title = 'Download original media';
     btnDownload.addEventListener('click', async () => {
       try {
         if (!mediaUrl) return;
+        btnDownload.disabled = true;
+        btnDownload.textContent = 'Downloading…';
+        btnDownload.dataset.state = 'busy';
         const siteName = post?.site?.name || post?.site?.baseUrl || 'unknown';
         const fileName = (window.getFileNameForPost ? window.getFileNameForPost(post, idx) : null);
-        await window.api.downloadImage({ url: mediaUrl, siteName, fileName });
+        const result = await window.api.downloadImage({ url: mediaUrl, siteName, fileName });
+        if (result?.cancelled) return;
+        if (result && result.ok === false) throw new Error(result.error || 'Download failed');
+        btnDownload.textContent = 'Saved ✓';
+        btnDownload.dataset.state = 'done';
+        setTimeout(() => {
+          if (!btnDownload.isConnected) return;
+          btnDownload.textContent = 'Download';
+          delete btnDownload.dataset.state;
+        }, 1800);
       } catch (e) {
         console.error('Download error:', e);
-        alert('Failed to download this media.');
+        alert(`Failed to download this media${e?.message ? `: ${e.message}` : '.'}`);
+      } finally {
+        btnDownload.disabled = false;
+        if (btnDownload.dataset.state === 'busy') {
+          btnDownload.textContent = 'Download';
+          delete btnDownload.dataset.state;
+        }
       }
     });
 
-    wrap.appendChild(btnOpenPost);
-    wrap.appendChild(btnOpenMedia);
     wrap.appendChild(btnFav);
     wrap.appendChild(btnDownload);
+
+    const more = document.createElement('details');
+    more.className = 'card-more';
+    const summary = document.createElement('summary');
+    summary.textContent = 'More';
+    summary.title = 'More actions';
+    summary.setAttribute('aria-label', 'More actions');
+    const menu = document.createElement('div');
+    menu.className = 'card-menu';
+
+    const btnOpenPost = document.createElement('button');
+    btnOpenPost.textContent = 'Open post ↗';
+    btnOpenPost.disabled = !post.post_url;
+    btnOpenPost.addEventListener('click', () => { more.removeAttribute('open'); openExternal(post.post_url); });
+
+    const btnOpenMedia = document.createElement('button');
+    btnOpenMedia.textContent = 'Open original ↗';
+    btnOpenMedia.disabled = !mediaUrl;
+    btnOpenMedia.addEventListener('click', () => { more.removeAttribute('open'); openExternal(mediaUrl); });
+
+    menu.appendChild(btnOpenPost);
+    menu.appendChild(btnOpenMedia);
+    more.appendChild(summary);
+    more.appendChild(menu);
+    wrap.appendChild(more);
     return wrap;
   };
 
@@ -254,7 +309,7 @@
       if (videoPost) {
         const badge = document.createElement('span');
         badge.className = 'thumb-video-badge';
-        badge.textContent = '▶';
+        badge.textContent = 'VIDEO';
         badge.setAttribute('aria-hidden', 'true');
         thumb.appendChild(badge);
       }
@@ -267,28 +322,35 @@
     const hit = document.createElement('div');
     hit.className = 'hitbox';
     hit.setAttribute('role', 'button');
-    hit.setAttribute('tabindex', '-1');
+    hit.setAttribute('tabindex', '0');
+    hit.setAttribute('aria-label', `View ${videoPost ? 'video' : 'image'} from ${post?.site?.name || post?.site?.type || 'source'}`);
+    hit.title = 'View media';
     onTap(hit, () => { if (window.openLightbox) window.openLightbox(post); });
+    hit.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      if (window.openLightbox) window.openLightbox(post);
+    });
     thumb.appendChild(hit);
 
     const meta = document.createElement('div');
     meta.className = 'meta';
     const left = document.createElement('div');
+    left.className = 'metric';
     const favs = Number.isFinite(post.favorites) ? post.favorites : 0;
     const score = Number.isFinite(post.score) ? post.score : 0;
-    left.textContent = `♡ ${favs} ★ ${score}`;
+    left.textContent = `${favs} fav · score ${score}`;
     const right = document.createElement('div');
-    const siteA = document.createElement('a');
-    siteA.href = '#';
-    siteA.className = 'site';
-    siteA.textContent = post?.site?.name || post?.site?.type || 'site';
-    siteA.addEventListener('click', (e) => { e.preventDefault(); if (post.post_url) openExternal(post.post_url); });
-    right.appendChild(siteA);
+    const siteLabel = document.createElement('span');
+    siteLabel.className = 'site';
+    siteLabel.textContent = post?.site?.name || post?.site?.type || 'site';
+    siteLabel.title = siteLabel.textContent;
+    right.appendChild(siteLabel);
     meta.appendChild(left);
     meta.appendChild(right);
 
+    thumb.appendChild(meta);
     card.appendChild(thumb);
-    card.appendChild(meta);
     card.appendChild(buildActions(post, index));
 
     return card;

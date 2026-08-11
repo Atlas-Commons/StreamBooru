@@ -3,9 +3,9 @@
 This adds a native Android app that reuses the `renderer/` UI. No TypeScript required.
 
 ## Prerequisites
-- Node.js 18+ (recommended 20)
-- Android Studio (SDK + platform tools)
-- Java 17 (Temurin/OpenJDK)
+- Node.js 22+
+- Android Studio with Android SDK 36 and Build Tools 36.0.0
+- Java 21 (Temurin/OpenJDK)
 - USB debugging enabled on device (or use an emulator)
 
 ## One-time setup
@@ -17,7 +17,7 @@ This adds a native Android app that reuses the `renderer/` UI. No TypeScript req
 
 2. Install Capacitor runtime + plugins (JavaScript):
    ```
-   npm i @capacitor/core @capacitor/android @capacitor/browser @capacitor/filesystem @capacitor/share @capacitor/app
+   npm i @capacitor/core @capacitor/android @capacitor/app @capacitor/browser @capacitor/file-transfer @capacitor/filesystem @capacitor/share
    npm i -D @capacitor/cli
    ```
 
@@ -71,7 +71,7 @@ This adds a native Android app that reuses the `renderer/` UI. No TypeScript req
 ## Permissions
 
 - INTERNET is included by default.
-- Image saving uses scoped storage via `@capacitor/filesystem` to `Pictures/StreamBooru/`.
+- Image saving uses scoped storage plus the official `@capacitor/file-transfer` plugin to stream into `Pictures/StreamBooru/`.
 - For some Android versions, call `ensureStoragePermission()` before saving if you hit permission errors.
 
 ## CI

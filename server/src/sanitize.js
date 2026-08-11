@@ -41,8 +41,10 @@ function sanitizeSiteInput(site) {
   const name = sName(site?.name || base_url || type || 'Site');
   const rating = sRating(site?.rating);
   const tags = sTags(site?.tags);
+  const dialect = String(site?.queryDialect || site?.query_dialect || 'auto').toLowerCase();
+  const query_dialect = ['auto', 'gelbooru', 'rule34'].includes(dialect) ? dialect : 'auto';
   const credentials = sanitizeCredentials(type, site?.credentials);
-  return { name, type, base_url, rating, tags, credentials };
+  return { name, type, base_url, rating, tags, query_dialect, credentials };
 }
 
 function sanitizeFavoriteKey(key) { return s(key, 400); }
