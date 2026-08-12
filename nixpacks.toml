@@ -14,7 +14,7 @@ cmds = [
 cmds = ['cd server && bun install --ignore-scripts']
 
 [phases.build]
-cmds = ['rm -rf server/webapp && cp -r renderer server/webapp']
+cmds = ['bun scripts/build-webapp.mjs']
 
 [start]
 cmd = 'cd server && bun run start:prod'

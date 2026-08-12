@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // Fetch posts
   fetchBooru: (payload) => ipcRenderer.invoke('booru:fetch', payload),
+  autocomplete: (payload) => ipcRenderer.invoke('booru:autocomplete', payload),
 
   // External
   openExternal: (url) => ipcRenderer.invoke('openExternal', url),
@@ -18,24 +19,19 @@ contextBridge.exposeInMainWorld('api', {
   // Images
   downloadImage: ({ url, siteName, fileName }) => ipcRenderer.invoke('download:image', { url, siteName, fileName }),
   downloadBulk: (items, options = {}) => ipcRenderer.invoke('download:bulk', { items, options }),
+  downloadBulkCancel: () => ipcRenderer.invoke('download:bulkCancel'),
   proxyImage: (url) => ipcRenderer.invoke('image:proxy', { url }),
 
   // Site helpers
-  booruFavorite: (payload) => ipcRenderer.invoke('booru:favorite', payload),
   favoritePost: (payload) => ipcRenderer.invoke('booru:favorite', payload),
   authCheck: (siteOrPayload) => ipcRenderer.invoke('booru:authCheck', { site: pickSite(siteOrPayload) }),
   rateLimit: (siteOrPayload) => ipcRenderer.invoke('booru:rateLimit', { site: pickSite(siteOrPayload) }),
-  rateLimitCheck: (siteOrPayload) => ipcRenderer.invoke('booru:rateLimit', { site: pickSite(siteOrPayload) }),
 
   // Local favorites
-  favKeys: () => ipcRenderer.invoke('favorites:keys'),
-  favList: () => ipcRenderer.invoke('favorites:list'),
-  favToggle: (post) => ipcRenderer.invoke('favorites:toggle', { post }),
-  favClear: () => ipcRenderer.invoke('favorites:clear'),
   getLocalFavoriteKeys: () => ipcRenderer.invoke('favorites:keys'),
   getLocalFavorites: () => ipcRenderer.invoke('favorites:list'),
   toggleLocalFavorite: (post) => ipcRenderer.invoke('favorites:toggle', { post }),
-  clearLocalFavorites: () => ipcRenderer.invoke('favorites:clear'),
+  favCounts: (keys) => ipcRenderer.invoke('favorites:counts', { keys }),
 
   // Account + sync
   accountGet: () => ipcRenderer.invoke('account:get'),
@@ -44,7 +40,9 @@ contextBridge.exposeInMainWorld('api', {
   accountLoginLocal: (username, password) => ipcRenderer.invoke('account:loginLocal', { username, password }),
   accountLoginDiscord: () => ipcRenderer.invoke('account:loginDiscord'),
   accountLinkDiscord: () => ipcRenderer.invoke('account:linkDiscord'),
+  accountUnlinkDiscord: () => ipcRenderer.invoke('account:unlinkDiscord'),
   accountLogout: () => ipcRenderer.invoke('account:logout'),
+  getVersion: () => ipcRenderer.invoke('app:getVersion'),
   syncOnLogin: () => ipcRenderer.invoke('sync:onLogin'),
   syncPullFavorites: () => ipcRenderer.invoke('sync:fav:pull'),
   sitesGetRemote: () => ipcRenderer.invoke('sites:getRemote'),
@@ -69,5 +67,11 @@ contextBridge.exposeInMainWorld('events', {
     const listener = () => handler();
     ipcRenderer.on('account:changed', listener);
     return () => ipcRenderer.removeListener('account:changed', listener);
+  },
+  onDownloadProgress: (handler) => {
+    if (typeof handler !== 'function') return () => {};
+    const listener = (_evt, progress) => handler(progress);
+    ipcRenderer.on('download:progress', listener);
+    return () => ipcRenderer.removeListener('download:progress', listener);
   }
 });

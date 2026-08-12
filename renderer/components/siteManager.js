@@ -102,14 +102,30 @@
       rating: site.rating || 'safe',
       tags: stripRatingTokens(site.tags || ''),
       queryDialect: site.queryDialect || site.query_dialect || 'auto',
+      enabled: site.enabled !== false,
       credentials: { ...(site.credentials || {}) }
     };
 
     const card = document.createElement('div');
     card.className = 'site-card compact';
+    card.classList.toggle('site-disabled', !s.enabled);
 
     const header = document.createElement('div');
     header.className = 'row header';
+
+    const enabledWrap = document.createElement('label');
+    enabledWrap.className = 'site-enabled';
+    enabledWrap.title = 'Include this source in feeds and searches';
+    const enabledInput = document.createElement('input');
+    enabledInput.type = 'checkbox';
+    enabledInput.checked = s.enabled;
+    enabledInput.setAttribute('aria-label', 'Site enabled');
+    enabledInput.addEventListener('change', () => {
+      s.enabled = enabledInput.checked;
+      card.classList.toggle('site-disabled', !s.enabled);
+      emitChange();
+    });
+    enabledWrap.appendChild(enabledInput);
 
     const name = document.createElement('input');
     name.placeholder = 'Name';
@@ -142,6 +158,7 @@
     del.className = 'btn-small danger';
     del.addEventListener('click', () => onDelete(idx));
 
+    header.appendChild(enabledWrap);
     header.appendChild(name);
     header.appendChild(baseUrl);
     header.appendChild(type);
@@ -310,7 +327,6 @@
       }
     }, 'accent');
 
-    // Compose actions row
     actions.appendChild(openAccountBtn);
     actions.appendChild(apiHelpBtn);
     actions.appendChild(testBtn);
@@ -332,13 +348,13 @@
         ? 'Use Login + API Key from your profile.'
         : s.type === 'gelbooru'
         ? 'Use User ID + API Key if supported.'
-        : s.type === 'e621'
+        :       s.type === 'e621'
         ? 'Authentication is optional; browsing works without it.'
         : s.type === 'derpibooru'
-        ? 'Authentication is optional; browsing works without it.'
+        ? 'Optional: an API key (account settings → API Key) applies your content filters; a Filter ID overrides the default filter.'
         : 'No authentication for this engine.';
 
-    const authField = function (ph, key) {
+    const authField = function (ph, key, secret) {
       const input = document.createElement('input');
       input.placeholder = ph;
       input.value = s.credentials[key] || '';
@@ -346,7 +362,29 @@
         s.credentials[key] = input.value.trim();
         emitChange();
       });
-      return input;
+      if (!secret) return input;
+
+      input.type = 'password';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      const wrap = document.createElement('div');
+      wrap.className = 'secret-field';
+      const reveal = document.createElement('button');
+      reveal.type = 'button';
+      reveal.className = 'secret-reveal';
+      reveal.textContent = 'Show';
+      reveal.title = `Show ${ph}`;
+      reveal.setAttribute('aria-pressed', 'false');
+      reveal.addEventListener('click', () => {
+        const hidden = input.type === 'password';
+        input.type = hidden ? 'text' : 'password';
+        reveal.textContent = hidden ? 'Hide' : 'Show';
+        reveal.title = `${hidden ? 'Hide' : 'Show'} ${ph}`;
+        reveal.setAttribute('aria-pressed', String(hidden));
+      });
+      wrap.appendChild(input);
+      wrap.appendChild(reveal);
+      return wrap;
     };
 
     const rebuildAuth = function () {
@@ -354,22 +392,19 @@
       authWrap.appendChild(authHint);
       if (s.type === 'danbooru') {
         authWrap.appendChild(authField('Login', 'login'));
-        authWrap.appendChild(authField('API Key', 'api_key'));
+        authWrap.appendChild(authField('API Key', 'api_key', true));
       } else if (s.type === 'moebooru') {
         authWrap.appendChild(authField('Login', 'login'));
-        authWrap.appendChild(authField('Password Hash', 'password_hash'));
+        authWrap.appendChild(authField('Password Hash', 'password_hash', true));
       } else if (s.type === 'gelbooru') {
         authWrap.appendChild(authField('User ID', 'user_id'));
-        authWrap.appendChild(authField('API Key', 'api_key'));
+        authWrap.appendChild(authField('API Key', 'api_key', true));
       } else if (s.type === 'e621') {
         authWrap.appendChild(authField('Login (optional)', 'login'));
-        authWrap.appendChild(authField('API Key (optional)', 'api_key'));
+        authWrap.appendChild(authField('API Key (optional)', 'api_key', true));
       } else if (s.type === 'derpibooru') {
-        const note = document.createElement('div');
-        note.className = 'hint';
-        note.style.gridColumn = '1 / -1';
-        note.textContent = 'No API auth required for browsing.';
-        authWrap.appendChild(note);
+        authWrap.appendChild(authField('API Key (optional)', 'key', true));
+        authWrap.appendChild(authField('Filter ID (optional)', 'filter_id'));
       } else {
         const note = document.createElement('div');
         note.className = 'hint';
@@ -465,7 +500,7 @@
       addBtn.textContent = 'Add Site';
       addBtn.className = 'btn-small';
       addBtn.addEventListener('click', () => {
-        sites.push({ name: 'New Site', type: 'danbooru', baseUrl: '', rating: 'safe', tags: '', queryDialect: 'auto', credentials: {} });
+        sites.push({ name: 'New Site', type: 'danbooru', baseUrl: '', rating: 'safe', tags: '', queryDialect: 'auto', enabled: true, credentials: {} });
         rerenderList();
       });
       addRow.appendChild(addBtn);
@@ -484,12 +519,15 @@
       save.type = 'button';
       save.textContent = 'Save';
 
+      let releaseOverlay = null;
       const hide = function () {
         container.classList.add('hidden');
         container.setAttribute('aria-hidden', 'true');
         container.innerHTML = '';
         container.removeEventListener('click', backdropHandler, true);
         document.removeEventListener('keydown', escHandler, true);
+        releaseOverlay?.();
+        releaseOverlay = null;
         onClose?.();
       };
 
@@ -515,6 +553,7 @@
               rating: s.rating || 'any',
               tags: stripRatingTokens(s.tags || ''),
               queryDialect: s.queryDialect || s.query_dialect || 'auto',
+              enabled: s.enabled !== false,
               credentials: s.credentials || {}
             }));
           await onSave({ sites: sanitized });
@@ -532,10 +571,12 @@
 
       document.addEventListener('keydown', escHandler, true);
       container.addEventListener('click', backdropHandler, true);
+      releaseOverlay = window.SBOverlay?.open?.('site-manager', { close: hide, root: container }) || null;
       setTimeout(() => container.focus(), 0);
     } catch (err) {
       console.error('renderSiteManager failed:', err);
-      alert('Failed to open Manage Sites. See Console for details.');
+      const msg = 'Failed to open Manage Sites. See Console for details.';
+      if (typeof window.toast === 'function') window.toast(msg, { type: 'error' }); else alert(msg);
     }
   };
 })();

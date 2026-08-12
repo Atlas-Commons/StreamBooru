@@ -1,6 +1,6 @@
 {
   "name": "streambooru",
-  "version": "1.1.0-beta.2",
+  "version": "1.2.0-beta.1",
   "description": "StreamBooru – Electron app to browse multiple booru sites with New and Popular feeds, merged across sources.",
   "main": "electron/main.js",
   "author": {
@@ -23,6 +23,8 @@
     "android:open": "npx cap open android",
     "android:build": "cd android && ./gradlew assembleDebug",
     "android:release": "cd android && ./gradlew bundleRelease",
+    "webapp:build": "node scripts/build-webapp.mjs",
+    "webapp:check": "node scripts/build-webapp.mjs --check",
     "test:tags": "node scripts/test-query-tags.js",
     "test:media": "node scripts/test-media.js",
     "test:server": "node scripts/test-server-local.js",
@@ -30,9 +32,14 @@
     "test:package": "node scripts/test-packaged-app.js"
   },
   "devDependencies": {
-    "@capacitor/cli": "8.4.2",
-    "electron": "^43.3.0",
+    "@capacitor/cli": "^8.5.0",
+    "electron": "^43.4.0",
     "electron-builder": "^26.15.3"
+  },
+  "overrides": {
+    "xcode": {
+      "uuid": "^11.1.1"
+    }
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",

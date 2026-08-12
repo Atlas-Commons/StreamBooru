@@ -35,10 +35,11 @@ This adds a native Android app that reuses the `renderer/` UI. No TypeScript req
 
 ## Development
 
-- Ensure the renderer does not call Electron APIs directly. Use `src/platform.js`:
+- Ensure the renderer does not call Electron APIs directly. Use `renderer/js/platform.js`:
   - `Platform.openExternal(url)`
-  - `Platform.saveImageFromUrl(url, filename)`
-  - `Platform.share({...})`
+  - `Platform.downloadMediaWeb(post)` / `Platform.downloadBulkWeb(posts)`
+  - `Platform.fetchMediaBlob(url)` / `Platform.mediaproxyUrl(url)`
+  - `Platform.ensureStoragePermission()`
   - `Platform.getVersion()`
 
 - To run on a device/emulator:

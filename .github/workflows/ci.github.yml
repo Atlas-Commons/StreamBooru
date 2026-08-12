@@ -25,6 +25,13 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install sync server dependencies
+        run: bun install --cwd server --frozen-lockfile
+      - run: npm run webapp:build
+      - run: npm run webapp:check
       - run: npm run test:media
       - run: npm run test:server
       - run: npm run test:tags

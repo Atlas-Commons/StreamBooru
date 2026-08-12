@@ -55,7 +55,7 @@ function clampPost(post) {
   const copy = (k, max = 2000) => {
     if (post[k] != null) keep[k] = typeof post[k] === 'string' ? s(post[k], max) : post[k];
   };
-  ['id','created_at','score','favorites','preview_url','sample_url','file_url','width','height','tags','rating','source','post_url','site','user_favorited','_added_at'].forEach((k)=>copy(k));
+  ['id','created_at','score','favorites','preview_url','sample_url','file_url','width','height','tags','artist','copyright','character','rating','source','post_url','site','grid_video_url','is_video','user_favorited','_added_at'].forEach((k)=>copy(k));
   try {
     const bytes = Buffer.byteLength(JSON.stringify(keep),'utf8');
     if (bytes > 300000) return null;

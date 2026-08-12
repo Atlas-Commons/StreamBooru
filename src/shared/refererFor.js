@@ -1,6 +1,4 @@
-/**
- * Shared Referer/Origin helpers for booru CDN hotlink requirements.
- */
+// Shared Referer/Origin helpers for booru CDN hotlink requirements
 const ALLOWED_HOSTS = [
   "donmai.us", "yande.re", "konachan.com", "konachan.net",
   "e621.net", "e926.net", "e621.media", "e926.media",

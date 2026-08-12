@@ -25,80 +25,73 @@ class DanbooruAdapter {
     return !isTakedown && !explicitlyHidden && !restrictedForThisUser;
   }
 
-  async fetchNew(site, { cursor, limit = 40, search = '' }) {
-    const page = cursor?.page || 1;
+  #mapPost(site, p) {
+    return normalizePost({
+      id: p.id,
+      created_at: p.created_at,
+      score: p.score,
+      favorites: p.fav_count ?? p.favorite_count ?? 0,
+      preview_url: abs(site.baseUrl, p.preview_file_url || p.preview_url),
+      sample_url: abs(site.baseUrl, p.large_file_url || p.file_url),
+      file_url: abs(site.baseUrl, p.file_url || p.large_file_url),
+      width: p.image_width,
+      height: p.image_height,
+      tags: p.tag_string ? p.tag_string.split(' ') : [],
+      artist: p.tag_string_artist || '',
+      copyright: p.tag_string_copyright || '',
+      character: p.tag_string_character || '',
+      rating: p.rating,
+      source: p.source,
+      post_url: `${site.baseUrl.replace(/\/+$/, '')}/posts/${p.id}`,
+      site: { name: site.name, type: site.type, baseUrl: site.baseUrl },
+      user_favorited: !!p.is_favorited
+    });
+  }
+
+  async #fetchPosts(site, { page, limit, tags }) {
     const params = new URLSearchParams();
     params.set('limit', String(Math.min(limit, 200)));
     params.set('page', String(page));
-    const tags = buildQueryTags(site, search);
     if (tags) params.set('tags', tags);
     this.#augmentAuth(site, params);
 
     const url = `${site.baseUrl.replace(/\/+$/, '')}/posts.json?${params.toString()}`;
     const posts = await this.httpGetJson(url);
-
     return {
       posts: (posts || [])
         .filter((p) => this.#filterPostVisibility(p))
-        .map((p) =>
-          normalizePost({
-            id: p.id,
-            created_at: p.created_at,
-            score: p.score,
-            favorites: p.fav_count ?? p.favorite_count ?? 0,
-            preview_url: abs(site.baseUrl, p.preview_file_url || p.preview_url),
-            sample_url: abs(site.baseUrl, p.large_file_url || p.file_url),
-            file_url: abs(site.baseUrl, p.file_url || p.large_file_url),
-            width: p.image_width,
-            height: p.image_height,
-            tags: p.tag_string ? p.tag_string.split(' ') : [],
-            rating: p.rating,
-            source: p.source,
-            post_url: `${site.baseUrl.replace(/\/+$/, '')}/posts/${p.id}`,
-            site: { name: site.name, type: site.type, baseUrl: site.baseUrl },
-            user_favorited: !!p.is_favorited
-          })
-        ),
+        .map((p) => this.#mapPost(site, p)),
       nextCursor: { page: page + 1 }
     };
   }
 
+  async fetchNew(site, { cursor, limit = 40, search = '' }) {
+    const page = cursor?.page || 1;
+    return this.#fetchPosts(site, { page, limit, tags: buildQueryTags(site, search) });
+  }
+
   async fetchPopular(site, { cursor, limit = 40, search = '' }) {
     const page = cursor?.page || 1;
+    return this.#fetchPosts(site, { page, limit, tags: buildQueryTags(site, 'order:rank', search) });
+  }
+
+  async autocomplete(site, prefix, { limit = 10 } = {}) {
+    const q = String(prefix || '').trim();
+    if (!q) return [];
+    const base = site.baseUrl.replace(/\/+$/, '');
     const params = new URLSearchParams();
-    params.set('limit', String(Math.min(limit, 200)));
-    params.set('page', String(page));
-    const tags = buildQueryTags(site, 'order:rank', search);
-    if (tags) params.set('tags', tags);
-    this.#augmentAuth(site, params);
-
-    const url = `${site.baseUrl.replace(/\/+$/, '')}/posts.json?${params.toString()}`;
-    const posts = await this.httpGetJson(url);
-
-    return {
-      posts: (posts || [])
-        .filter((p) => this.#filterPostVisibility(p))
-        .map((p) =>
-          normalizePost({
-            id: p.id,
-            created_at: p.created_at,
-            score: p.score,
-            favorites: p.fav_count ?? p.favorite_count ?? 0,
-            preview_url: abs(site.baseUrl, p.preview_file_url || p.preview_url),
-            sample_url: abs(site.baseUrl, p.large_file_url || p.file_url),
-            file_url: abs(site.baseUrl, p.file_url || p.large_file_url),
-            width: p.image_width,
-            height: p.image_height,
-            tags: p.tag_string ? p.tag_string.split(' ') : [],
-            rating: p.rating,
-            source: p.source,
-            post_url: `${site.baseUrl.replace(/\/+$/, '')}/posts/${p.id}`,
-            site: { name: site.name, type: site.type, baseUrl: site.baseUrl },
-            user_favorited: !!p.is_favorited
-          })
-        ),
-      nextCursor: { page: page + 1 }
-    };
+    params.set('search[query]', q);
+    params.set('search[type]', 'tag_query');
+    params.set('limit', String(Math.min(limit, 20)));
+    const res = await this.httpGetJson(`${base}/autocomplete.json?${params.toString()}`);
+    return (Array.isArray(res) ? res : [])
+      .filter((t) => t && (t.value || t.label))
+      .map((t) => ({
+        value: String(t.value || t.label),
+        label: String(t.label || t.value),
+        count: Number(t.post_count) || 0,
+        category: String(t.category ?? '')
+      }));
   }
 
   async favorite(site, postId, action = 'add') {

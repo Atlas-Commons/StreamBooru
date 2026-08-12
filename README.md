@@ -1,4 +1,6 @@
-# 🌊 StreamBooru
+<p align="center">
+  <img src="branding/streambooru-banner.png" alt="StreamBooru — browse every booru you use from one feed" width="760" />
+</p>
 
 [![CI](https://github.com/Atlas-Commons/StreamBooru/actions/workflows/ci.yml/badge.svg)](https://github.com/Atlas-Commons/StreamBooru/actions/workflows/ci.yml)
 
@@ -179,6 +181,13 @@ npm run start
 # Build packages (.deb, .tar.gz, .exe)
 npx electron-builder --linux deb tar.gz
 npx electron-builder --win nsis
+```
+
+The sync server keeps its own dependency tree, so install it before running
+`npm run test:server` (or anything else that loads `server/src`):
+
+```bash
+bun install --cwd server --frozen-lockfile
 ```
 
 ---

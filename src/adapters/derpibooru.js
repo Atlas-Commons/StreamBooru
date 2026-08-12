@@ -34,6 +34,12 @@ class DerpibooruAdapter {
       ? img.tags
       : (typeof img?.tags === 'string' ? img.tags.split(',').map((t)=>t.trim()) : []);
 
+    // Derpibooru encodes categories as namespaced tags (artist:foo, oc:bar)
+    const byPrefix = (prefix) => tagsArr
+      .filter((t) => String(t).toLowerCase().startsWith(prefix))
+      .map((t) => String(t).slice(prefix.length).trim())
+      .filter(Boolean);
+
     return normalizePost({
       id: img.id,
       created_at: img.created_at,
@@ -45,6 +51,8 @@ class DerpibooruAdapter {
       width: img.width || null,
       height: img.height || null,
       tags: tagsArr,
+      artist: byPrefix('artist:'),
+      character: byPrefix('oc:'),
       rating: (Array.isArray(tagsArr) ? tagsArr : []).includes('explicit')
         ? 'explicit'
         : (Array.isArray(tagsArr) && tagsArr.includes('questionable') ? 'questionable' : 'safe'),
@@ -71,6 +79,10 @@ class DerpibooruAdapter {
     params.set('sf', sortField);
     params.set('sd', sortDir);
 
+    // Optional API key applies the account's own filters/settings
+    const apiKey = site?.credentials?.key || site?.credentials?.api_key || site?.key;
+    if (apiKey) params.set('key', String(apiKey));
+
     // Optional: support custom filter to avoid default filter hiding content
     const filterId = site?.credentials?.filter_id || site?.filter_id;
     if (filterId) params.set('filter_id', String(filterId));
@@ -89,6 +101,24 @@ class DerpibooruAdapter {
 
   async fetchPopular(site, opts) {
     return this.#fetch(site, { ...opts, sortField: 'score', sortDir: 'desc' });
+  }
+
+  async autocomplete(site, prefix, { limit = 10 } = {}) {
+    const q = String(prefix || '').trim();
+    if (!q) return [];
+    const base = (site.baseUrl || '').replace(/\/+$/, '');
+    const params = new URLSearchParams();
+    params.set('q', `${q.replace(/\*+$/, '')}*`);
+    params.set('per_page', String(Math.min(limit, 20)));
+    const data = await this.httpGetJson(`${base}/api/v1/json/search/tags?${params.toString()}`, { Accept: 'application/json' });
+    return (Array.isArray(data?.tags) ? data.tags : [])
+      .filter((t) => t && t.name)
+      .map((t) => ({
+        value: String(t.name).replace(/\s+/g, '+'),
+        label: String(t.name),
+        count: Number(t.images) || 0,
+        category: String(t.category ?? '')
+      }));
   }
 }
 

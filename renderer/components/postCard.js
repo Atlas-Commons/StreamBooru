@@ -4,7 +4,7 @@
   const isElectron = () => !!(window.Platform?.isElectron?.());
   const isAndroid = () => !!(window.Platform?.isAndroid?.());
   const isWebBrowser = () => !isElectron() && !isAndroid();
-  const hostMatches = (host, domain) => host === domain || host.endsWith(`.${domain}`);
+  const isHotlinkHost = (u) => !!window.isHotlinkHost?.(u);
 
   if (!window.__streambooruCardMenuDismiss) {
     window.__streambooruCardMenuDismiss = true;
@@ -22,16 +22,6 @@
     try { const p = new URL(u, 'https://x/').pathname.toLowerCase(); return /\.(mp4|webm|mov|m4v)$/i.test(p); }
     catch { return /\.(mp4|webm|mov|m4v)$/i.test(String(u || '').toLowerCase()); }
   };
-
-  function isHotlinkHost(u) {
-    try {
-      const h = new URL(u).hostname.toLowerCase();
-      return ['donmai.us', 'yande.re', 'konachan.com', 'konachan.net', 'e621.net', 'e926.net',
-        'e621.media', 'e926.media', 'derpibooru.org', 'derpicdn.net', 'gelbooru.com',
-        'safebooru.org', 'rule34.xxx', 'realbooru.com', 'xbooru.com', 'tbib.org',
-        'hypnohub.net'].some((domain) => hostMatches(h, domain));
-    } catch { return false; }
-  }
 
   // Booru preview images are commonly only 150–300px wide. Prefer the site's
   // display-sized sample so cards stay sharp, then retain lightweight fallbacks.
@@ -79,17 +69,17 @@
       imgEl.onerror = () => finish(false);
       imgEl.removeAttribute('srcset');
       imgEl.src = url;
-
-      if ((isWebBrowser() || isAndroid()) && isHotlinkHost(url)) {
-        imgEl.onload = null;
-        imgEl.onerror = null;
-        proxyIntoImg(imgEl, url).then(resolve);
-      }
     });
 
     const run = async () => {
       while (idx < urls.length) {
         const url = urls[idx++];
+        // On web/Android a hotlinked direct load is guaranteed to 403/CORS-fail,
+        // so go straight to the proxy instead of firing a doomed request first.
+        if ((isWebBrowser() || isAndroid()) && isHotlinkHost(url)) {
+          if (await proxyIntoImg(imgEl, url)) return;
+          continue;
+        }
         if (await tryDirect(url)) return;
         if (await proxyIntoImg(imgEl, url)) return;
       }
@@ -105,18 +95,21 @@
       return;
     }
 
+    const autoplay = window.__sbSettings?.autoplayVideoThumbs !== false;
+
     thumbEl.classList.add('thumb--video');
     const vid = document.createElement('video');
     vid.className = 'thumb-video';
     vid.muted = true;
     vid.loop = true;
     vid.playsInline = true;
-    vid.autoplay = true;
-    vid.preload = 'auto';
+    vid.autoplay = autoplay;
+    vid.preload = autoplay ? 'auto' : 'metadata';
     vid.setAttribute('aria-label', 'Video preview');
     vid.draggable = false;
 
     const play = () => { try { vid.play()?.catch(() => {}); } catch {} };
+    const pause = () => { try { vid.pause(); } catch {} };
 
     const loadBlob = async () => {
       try {
@@ -131,7 +124,13 @@
       }
     };
 
-    vid.onloadeddata = play;
+    if (autoplay) {
+      vid.onloadeddata = play;
+    } else {
+      // Hover-to-play when grid autoplay is disabled in Settings
+      thumbEl.addEventListener('pointerenter', play);
+      thumbEl.addEventListener('pointerleave', pause);
+    }
     vid.onerror = async () => {
       if (await loadBlob()) return;
       if (vid._blobUrl) URL.revokeObjectURL(vid._blobUrl);
@@ -188,10 +187,10 @@
     const btnFav = document.createElement('button');
     btnFav.className = 'action-save';
     const updateFavoriteButton = () => {
-      const saved = window.isLocalFavorite(post);
-      btnFav.textContent = saved ? 'Saved' : 'Save';
-      btnFav.setAttribute('aria-pressed', String(saved));
-      btnFav.title = saved ? 'Remove from favourites' : 'Save to favourites';
+      const faved = window.isLocalFavorite(post);
+      btnFav.textContent = faved ? '♥ Faved' : '♡ Fave';
+      btnFav.setAttribute('aria-pressed', String(faved));
+      btnFav.title = faved ? 'Remove from favourites' : 'Add to favourites (does not download the file)';
     };
     updateFavoriteButton();
     btnFav.addEventListener('click', async () => {
@@ -225,7 +224,8 @@
         }, 1800);
       } catch (e) {
         console.error('Download error:', e);
-        alert(`Failed to download this media${e?.message ? `: ${e.message}` : '.'}`);
+        const msg = `Failed to download this media${e?.message ? `: ${e.message}` : '.'}`;
+        if (typeof window.toast === 'function') window.toast(msg, { type: 'error' }); else alert(msg);
       } finally {
         btnDownload.disabled = false;
         if (btnDownload.dataset.state === 'busy') {
@@ -265,13 +265,43 @@
     return wrap;
   };
 
+  const canonRating = (rating) => {
+    const value = String(rating || '').toLowerCase();
+    if (value === 'g' || value === 'general' || value.startsWith('s')) return 's';
+    if (value.startsWith('q') || value === 'sensitive' || value === 'mature') return 'q';
+    return value.startsWith('e') ? 'e' : '';
+  };
+
+  const topTags = (post, max = 4) => {
+    const seen = new Set();
+    const out = [];
+    for (const list of [post.artist, post.character, post.copyright, post.tags]) {
+      for (const t of (Array.isArray(list) ? list : [])) {
+        const tag = String(t);
+        if (!tag || seen.has(tag)) continue;
+        seen.add(tag);
+        out.push(tag);
+        if (out.length >= max) return out;
+      }
+    }
+    return out;
+  };
+
   window.PostCard = (post, index = 0) => {
     const card = document.createElement('div');
     card.className = 'card';
     card.dataset.key = `${post?.site?.baseUrl || ''}#${post?.id}`;
+    const ratingCanon = canonRating(post?.rating);
+    if (ratingCanon) card.dataset.rating = ratingCanon;
+
+    const w = Number(post?.width) || 0;
+    const h = Number(post?.height) || 0;
+    const aspect = w > 0 && h > 0 ? Math.min(2.2, Math.max(0.5, w / h)) : 1;
+    card.dataset.ar = String(aspect);
 
     const thumb = document.createElement('div');
     thumb.className = 'thumb';
+    thumb.style.setProperty('--natural-ar', String(aspect));
 
     const videoPost = isVideoPost(post);
     const staticUrls = thumbCandidates(post);
@@ -333,13 +363,44 @@
     });
     thumb.appendChild(hit);
 
+    const chipTags = topTags(post);
+    if (chipTags.length && typeof window.searchForTag === 'function') {
+      const chips = document.createElement('div');
+      chips.className = 'tags-overlay';
+      for (const tag of chipTags) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'tag-chip';
+        chip.textContent = tag;
+        chip.title = `Search ${tag}`;
+        chip.addEventListener('click', (e) => {
+          e.stopPropagation();
+          window.searchForTag(tag);
+        });
+        chips.appendChild(chip);
+      }
+      thumb.appendChild(chips);
+    }
+
     const meta = document.createElement('div');
     meta.className = 'meta';
     const left = document.createElement('div');
     left.className = 'metric';
     const favs = Number.isFinite(post.favorites) ? post.favorites : 0;
     const score = Number.isFinite(post.score) ? post.score : 0;
-    left.textContent = `${favs} fav · score ${score}`;
+    const sourceStats = document.createElement('span');
+    sourceStats.textContent = `${favs} fav · score ${score}`;
+    left.appendChild(sourceStats);
+    const sbFavs = document.createElement('span');
+    sbFavs.className = 'sb-favs';
+    sbFavs.hidden = true;
+    const cachedCount = typeof window.getSbFaveCount === 'function' ? window.getSbFaveCount(post) : null;
+    if (cachedCount > 0) {
+      sbFavs.textContent = `♥ ${cachedCount}`;
+      sbFavs.title = `${cachedCount} StreamBooru user${cachedCount === 1 ? '' : 's'} faved this`;
+      sbFavs.hidden = false;
+    }
+    left.appendChild(sbFavs);
     const right = document.createElement('div');
     const siteLabel = document.createElement('span');
     siteLabel.className = 'site';

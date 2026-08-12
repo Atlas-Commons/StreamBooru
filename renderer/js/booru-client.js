@@ -42,7 +42,9 @@
         id: post.id, score: post.score ?? 0, favorites: post.fav_count ?? post.favorites ?? 0,
         rating: post.rating || '', width: post.image_width ?? post.width ?? 0,
         height: post.image_height ?? post.height ?? 0, created_at: post.created_at || post.created_at_s || '',
-        tags: splitTags(post.tag_string), file_url: post.file_url ? ensureHttps(post.file_url) : '',
+        tags: splitTags(post.tag_string),
+        artist: splitTags(post.tag_string_artist), copyright: splitTags(post.tag_string_copyright), character: splitTags(post.tag_string_character),
+        file_url: post.file_url ? ensureHttps(post.file_url) : '',
         sample_url: post.large_file_url ? ensureHttps(post.large_file_url) : (post.file_url ? ensureHttps(post.file_url) : ''),
         preview_url: post.preview_file_url ? ensureHttps(post.preview_file_url) : '', post_url: `${base}/posts/${post.id}`, site
       };
@@ -81,11 +83,15 @@
       const sampleUrl = sample.url ? ensureHttps(sample.url) : fileUrl;
       const previewUrl = preview.url ? ensureHttps(preview.url) : '';
       const isVideo = ['webm', 'mp4', 'm4v', 'mov'].includes(String(file.ext || '').toLowerCase()) || isVideoMediaUrl(fileUrl);
+      const tagsObj = post.tags || {};
       return {
         id: post.id, score: Number(post?.score?.total ?? post?.score ?? 0) || 0,
         favorites: Number(post?.fav_count ?? 0) || 0, rating: post.rating || '',
         width: Number(file.width ?? 0) || 0, height: Number(file.height ?? 0) || 0,
-        created_at: post.created_at || '', tags: Object.values(post.tags || {}).flat().filter(Boolean),
+        created_at: post.created_at || '', tags: Object.values(tagsObj).flat().filter(Boolean),
+        artist: Array.isArray(tagsObj.artist) ? tagsObj.artist : [],
+        copyright: Array.isArray(tagsObj.copyright) ? tagsObj.copyright : [],
+        character: Array.isArray(tagsObj.character) ? tagsObj.character : [],
         file_url: fileUrl || sampleUrl, sample_url: sampleUrl, preview_url: previewUrl,
         post_url: `${base}/posts/${post.id}`, grid_video_url: isVideo ? (fileUrl || sampleUrl) : '', is_video: isVideo, site
       };
@@ -182,6 +188,75 @@
       return { posts, nextCursor: posts.length >= Math.max(1, limit) ? page + 1 : null };
     }
 
-    return { buildQueryTags, fetchBooruWeb, normalizeE621, ratingToTag };
+    function parseXmlTags(xml) {
+      try {
+        return [...new DOMParser().parseFromString(xml, 'text/xml').getElementsByTagName('tag')]
+          .map((node) => Object.fromEntries([...node.attributes].map((attribute) => [attribute.name, attribute.value])));
+      } catch { return []; }
+    }
+
+    const mapSuggestions = (list, { value = 'name', label = 'name', count = 'count', category = 'type' } = {}) =>
+      (Array.isArray(list) ? list : [])
+        .filter((t) => t && (t[value] || t[label]))
+        .map((t) => ({
+          value: String(t[value] || t[label]),
+          label: String(t[label] || t[value]),
+          count: Number(t[count]) || 0,
+          category: String(t[category] ?? '')
+        }));
+
+    async function autocompleteWeb({ site, prefix, limit = 10 } = {}) {
+      const q = String(prefix || '').trim();
+      if (!q || !site?.baseUrl) return [];
+      const base = String(site.baseUrl).replace(/\/+$/, '');
+      const max = Math.min(Number(limit) || 10, 20);
+      try {
+        if (site.type === 'danbooru') {
+          const params = new URLSearchParams();
+          params.set('search[query]', q);
+          params.set('search[type]', 'tag_query');
+          params.set('limit', String(max));
+          const res = await httpGetJSON(`${base}/autocomplete.json?${params}`);
+          return mapSuggestions(res, { value: 'value', label: 'label', count: 'post_count', category: 'category' });
+        }
+        if (site.type === 'moebooru') {
+          const params = new URLSearchParams({ name: `${q.replace(/\*+$/, '')}*`, order: 'count', limit: String(max) });
+          const res = await httpGetJSON(`${base}/tag.json?${params}`);
+          return mapSuggestions(res);
+        }
+        if (site.type === 'e621') {
+          if (q.length < 3) return [];
+          const params = new URLSearchParams();
+          params.set('search[name_matches]', q);
+          params.set('limit', String(max));
+          const res = await httpGetJSON(`${base}/tags/autocomplete.json?${params}`);
+          return mapSuggestions(res, { value: 'name', label: 'name', count: 'post_count', category: 'category' });
+        }
+        if (site.type === 'gelbooru') {
+          const apiBase = queryDialects.gelbooruApiBase?.(base, site) || base;
+          const params = new URLSearchParams({ page: 'dapi', s: 'tag', q: 'index', json: '1', limit: String(max), orderby: 'count' });
+          params.set('name_pattern', `${q.replace(/%+/g, '')}%`);
+          const user = site?.credentials?.user_id || '';
+          const key = site?.credentials?.api_key || '';
+          if (user && key) { params.set('user_id', String(user)); params.set('api_key', String(key)); }
+          try {
+            const json = await httpGetJSON(`${apiBase}/index.php?${params}`);
+            const tags = Array.isArray(json) ? json : (Array.isArray(json?.tag) ? json.tag : []);
+            if (tags.length) return mapSuggestions(tags);
+          } catch {}
+          params.delete('json');
+          return mapSuggestions(parseXmlTags(await httpGetText(`${apiBase}/index.php?${params}`)));
+        }
+        if (site.type === 'derpibooru') {
+          const params = new URLSearchParams({ q: `${q.replace(/\*+$/, '')}*`, per_page: String(max) });
+          const data = await httpGetJSON(`${base}/api/v1/json/search/tags?${params}`);
+          return mapSuggestions(data?.tags, { value: 'name', label: 'name', count: 'images', category: 'category' })
+            .map((s) => ({ ...s, value: s.value.replace(/\s+/g, '+') }));
+        }
+      } catch {}
+      return [];
+    }
+
+    return { buildQueryTags, fetchBooruWeb, autocompleteWeb, normalizeE621, ratingToTag };
   };
 })();

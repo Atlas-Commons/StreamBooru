@@ -88,7 +88,6 @@ class MoebooruAdapter {
     return { posts: normalized, nextCursor: { page: page + 1 } };
   }
 
-  // NEW: auth check returns account info for moebooru sites
   async authCheck(site) {
     if (!site.credentials?.login || !site.credentials?.password_hash) {
       return { ok: false, info: { reason: 'Missing login or password_hash' } };
@@ -102,10 +101,8 @@ class MoebooruAdapter {
     const info = {
       id: res?.id ?? null,
       name: res?.name ?? site.credentials.login,
-      // some instances use 'level' or 'user_level'
       level: res?.level ?? res?.user_level ?? null
     };
-    // If a user object returned, consider OK
     return { ok: !!(info.id || info.name), info };
   }
 
@@ -123,6 +120,25 @@ class MoebooruAdapter {
     }
     const url = `${base}/favorite/create.json?post_id=${encodeURIComponent(postId)}&${cred}`;
     return await this.httpPostForm(url, {});
+  }
+
+  async autocomplete(site, prefix, { limit = 10 } = {}) {
+    const q = String(prefix || '').trim();
+    if (!q) return [];
+    const base = site.baseUrl.replace(/\/+$/, '');
+    const params = new URLSearchParams();
+    params.set('name', `${q.replace(/\*+$/, '')}*`);
+    params.set('order', 'count');
+    params.set('limit', String(Math.min(limit, 20)));
+    const res = await this.httpGetJson(`${base}/tag.json?${params.toString()}`);
+    return (Array.isArray(res) ? res : [])
+      .filter((t) => t && t.name)
+      .map((t) => ({
+        value: String(t.name),
+        label: String(t.name),
+        count: Number(t.count) || 0,
+        category: String(t.type ?? '')
+      }));
   }
 
   #augmentAuth(site, params) {

@@ -26,17 +26,17 @@
 
 .health-badge.loading {
   color: var(--muted);
-  background: #1a1f2e;
+  background: #1f242c;
 }
 
 .health-badge.ok {
-  color: #52d273;
+  color: var(--good);
   background: rgba(82, 210, 115, 0.12);
   border-color: rgba(82, 210, 115, 0.35);
 }
 
 .health-badge.bad {
-  color: #ff6b6b;
+  color: var(--bad);
   background: rgba(255, 107, 107, 0.12);
   border-color: rgba(255, 107, 107, 0.35);
 }
@@ -76,8 +76,8 @@
   text-align: right;
 }
 
-.check-value.ok { color: #52d273; }
-.check-value.bad { color: #ff6b6b; }
+.check-value.ok { color: var(--good); }
+.check-value.bad { color: var(--bad); }
 .check-value.muted { color: var(--muted); font-weight: 500; }
 
 .health-actions {
@@ -105,10 +105,10 @@
 .health-json pre {
   margin: 12px 0 0;
   padding: 12px;
-  background: #0b0d12;
+  background: #0b0d11;
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: auto;
   font-size: 0.85rem;
-  color: #c8d0e0;
+  color: #cfd4dd;
 }

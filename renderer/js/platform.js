@@ -23,9 +23,6 @@
     const base = defaultOriginBase() || (typeof window !== 'undefined' ? window.location.origin.replace(/\/+$/, '') : '');
     return `${base}/oauth-callback`;
   }
-  function isMobileWeb() {
-    return isWebBrowser() && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
-  }
   function buildDiscordLoginUrl() {
     const acc = accLoad();
     let base = accGetBase(acc);
@@ -54,6 +51,14 @@
   function getHttp() { return C?.Plugins?.CapacitorHttp || C?.Plugins?.Http || null; }
   function originFrom(url) { try { return new URL(url).origin; } catch { return ''; } }
   const b64 = (s) => { try { return typeof btoa === 'function' ? btoa(s) : Buffer.from(s, 'utf8').toString('base64'); } catch { return s; } };
+  // chunked to avoid per-byte string concat and fromCharCode arg limits
+  function bytesToBase64(bytes) {
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return b64(bin);
+  }
 
   // Tiny event bus used by renderer
   const Events = (() => {
@@ -64,11 +69,10 @@
     return {
       on, off, emit,
       onFavoritesChanged: (fn) => on('favorites_changed', fn),
-      offFavoritesChanged: (fn) => off('favorites_changed', fn),
       onConfigChanged: (fn) => on('config_changed', fn),
-      offConfigChanged: (fn) => off('config_changed', fn),
       onAccountChanged: (fn) => on('account_changed', fn),
-      emitAccountChanged: () => emit('account_changed', {})
+      emitAccountChanged: () => emit('account_changed', {}),
+      onDownloadProgress: (fn) => on('download_progress', fn)
     };
   })();
   window.events = window.events || Events;
@@ -226,6 +230,16 @@
 
   // Image fetch helpers (Referer/Origin for hotlinking)
   const hostMatches = (host, domain) => host === domain || host.endsWith(`.${domain}`);
+  const HOTLINK_HOSTS = ['donmai.us', 'yande.re', 'konachan.com', 'konachan.net', 'e621.net', 'e926.net',
+    'e621.media', 'e926.media', 'derpibooru.org', 'derpicdn.net', 'gelbooru.com',
+    'safebooru.org', 'rule34.xxx', 'realbooru.com', 'xbooru.com', 'tbib.org', 'hypnohub.net'];
+  function isHotlinkHost(u) {
+    try {
+      const h = new URL(u).hostname.toLowerCase();
+      return HOTLINK_HOSTS.some((domain) => hostMatches(h, domain));
+    } catch { return false; }
+  }
+  window.isHotlinkHost = isHotlinkHost;
   function refererFor(url) {
     try {
       const h = new URL(url).hostname.toLowerCase();
@@ -243,17 +257,6 @@
       return '';
     } catch { return ''; }
   }
-  function hostNeedsProxy(url) {
-    try {
-      const h = new URL(url).hostname.toLowerCase();
-      return (
-        hostMatches(h, 'donmai.us') ||
-        hostMatches(h, 'yande.re') ||
-        hostMatches(h, 'konachan.com') || hostMatches(h, 'konachan.net')
-      );
-    } catch { return false; }
-  }
-
   // LRU cache for proxied images (data URLs)
   const IMG_CACHE_MAX = 400;
   const imgCache = new Map();
@@ -311,9 +314,7 @@
     const resp = await fetch(url, { headers, credentials: 'omit' });
     if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${url}`);
     const buf = await (await resp.blob()).arrayBuffer();
-    const bytes = new Uint8Array(buf); let bin = '';
-    for (let i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
-    return b64(bin);
+    return bytesToBase64(new Uint8Array(buf));
   }
   function guessMime(url) {
     let u = String(url || '').toLowerCase();
@@ -375,7 +376,7 @@
   async function favKeys() { return [...favLoadKeys()]; }
   async function favList() { const map = favLoadMap(); const out = []; for (const v of map.values()) { try { out.push(JSON.parse(v)); } catch {} } return out; }
 
-  const { fetchBooruWeb } = window.createBooruClient({ httpGetJSON, httpGetText, isVideoMediaUrl });
+  const { fetchBooruWeb, autocompleteWeb } = window.createBooruClient({ httpGetJSON, httpGetText, isVideoMediaUrl });
 
   // proxy image with LRU cache and server fallback (CapacitorHttp to bypass CORS)
   async function proxyImage(input) {
@@ -534,12 +535,9 @@
     const blob = await fetchMediaBlob(url);
     if (!Filesystem?.writeFile) throw new Error('Filesystem plugin unavailable');
     const buf = await blob.arrayBuffer();
-    const bytes = new Uint8Array(buf);
-    let bin = '';
-    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
     const result = await Filesystem.writeFile({
       path: `StreamBooru/${safeName}`,
-      data: b64(bin),
+      data: bytesToBase64(new Uint8Array(buf)),
       directory: 'EXTERNAL',
       recursive: true
     });
@@ -569,6 +567,13 @@
     }
   }
 
+  let bulkWebJob = null;
+  function downloadBulkCancelWeb() {
+    if (isElectron() && window.api?.downloadBulkCancel) return window.api.downloadBulkCancel();
+    if (bulkWebJob) { bulkWebJob.cancelled = true; return { ok: true }; }
+    return { ok: false };
+  }
+
   async function downloadBulkWeb(items, options = {}) {
     if (isElectron() && window.api?.downloadBulk) {
       return window.api.downloadBulk(items, options);
@@ -576,12 +581,27 @@
     if (!Array.isArray(items) || items.length === 0) {
       return { ok: false, error: 'No items to download' };
     }
+
+    const job = { cancelled: false };
+    bulkWebJob = job;
+    const total = items.length;
+    let done = 0;
+    let saved = 0;
+    const failed = [];
+    const progress = () => {
+      try { window.events?.emit?.('download_progress', { done, total, saved, failed: failed.length, cancelled: job.cancelled }); } catch {}
+    };
+    const finish = (result) => {
+      if (bulkWebJob === job) bulkWebJob = null;
+      return result;
+    };
+
     if (isWebBrowser() && items.length > 1) {
       const ok = window.confirm(`Download ${items.length} files? Your browser will save them one at a time.`);
-      if (!ok) return { ok: false, cancelled: true };
-      const failed = [];
-      let saved = 0;
+      if (!ok) return finish({ ok: false, cancelled: true });
+      progress();
       for (let i = 0; i < items.length; i++) {
+        if (job.cancelled) break;
         const it = items[i];
         try {
           const safeName = String(it.fileName || `file_${i}`).replace(/[<>:"/\\|?*\x00-\x1F]+/g, '_').slice(0, 200);
@@ -592,15 +612,17 @@
         } catch (e) {
           failed.push({ i, error: String(e?.message || e) });
         }
+        done++;
+        progress();
       }
-      return { ok: true, saved, failed, basePath: '(browser downloads)' };
+      return finish({ ok: true, saved, failed, basePath: '(browser downloads)', cancelled: job.cancelled, remaining: total - done });
     }
+
     const concurrency = Number(options.concurrency || 3);
     let index = 0;
-    let saved = 0;
-    const failed = [];
     const worker = async () => {
       while (true) {
+        if (job.cancelled) return;
         const i = index++;
         if (i >= items.length) return;
         const it = items[i];
@@ -611,10 +633,13 @@
         } catch (e) {
           failed.push({ i, error: String(e?.message || e) });
         }
+        done++;
+        progress();
       }
     };
+    progress();
     await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
-    return { ok: true, saved, failed, basePath: '(browser downloads)' };
+    return finish({ ok: true, saved, failed, basePath: '(browser downloads)', cancelled: job.cancelled, remaining: total - done });
   }
 
   // Account helpers for remote sync
@@ -687,12 +712,17 @@
     return { ok: true, favorited, key };
   }
 
-  // Replace local favourites from remote (authoritative) — use British endpoints
+  // Merge remote favourites with local ones; local-only faves get pushed up
+  // rather than overwritten. Use British endpoints.
   async function syncReplaceFavorites() {
     const acc = accLoad(); const base = accGetBase(acc);
     if (!base || !acc.token) return { ok: false, error: 'Not logged in' };
     const data = await httpGetJSON(`${base}/api/favourites`, { Authorization: `Bearer ${acc.token}` });
     const remote = Array.isArray(data?.items) ? data.items : [];
+    const deletedAt = new Map();
+    for (const d of Array.isArray(data?.deletions) ? data.deletions : []) {
+      if (d?.key) deletedAt.set(String(d.key), Number(d.deleted_at) || 0);
+    }
     const keys = new Set();
     const map = new Map();
     for (const it of remote) {
@@ -700,16 +730,36 @@
       keys.add(k);
       map.set(k, JSON.stringify({ ...it.post, _added_at: Number(it.added_at) || Date.now() }));
     }
+    const localKeys = favLoadKeys();
+    const localMap = favLoadMap();
+    const extras = [];
+    for (const k of localKeys) {
+      if (keys.has(k)) continue;
+      const raw = localMap.get(k);
+      if (!raw) continue;
+      let post = null;
+      try { post = JSON.parse(raw); } catch {}
+      const addedAt = Number(post?._added_at) || 0;
+      // another device unfaved it after this one saved it, so let the removal win
+      if (post && (deletedAt.get(k) ?? -1) >= addedAt) continue;
+      keys.add(k);
+      map.set(k, raw);
+      if (post) extras.push({ key: k, added_at: addedAt || Date.now(), post });
+    }
     favSaveKeys(keys);
     favSaveMap(map);
-    return { ok: true, count: keys.size };
+    if (extras.length) {
+      try {
+        await httpPostJSON(`${base}/api/favourites/bulk_upsert`, { items: extras }, { Authorization: `Bearer ${acc.token}` });
+      } catch (e) {
+        console.warn('failed to push local-only favourites', e?.message || e);
+      }
+    }
+    return { ok: true, count: keys.size, pushed: extras.length };
   }
 
   // Sites sync helpers
-  function normBase(u) {
-    try { const url = new URL(String(u || '').trim()); url.hash=''; url.search=''; return url.toString().replace(/\/+$/,''); }
-    catch { return String(u || '').replace(/\/+$/,''); }
-  }
+  const normBase = normalizeBaseUrl;
   function buildSitesPayload(sites) {
     return (Array.isArray(sites) ? sites : []).map((s, idx) => {
       const base_url = normBase(s.base_url || s.baseUrl || '');
@@ -722,6 +772,7 @@
         tags: String(s.tags || ''),
         queryDialect: String(s.queryDialect || s.query_dialect || 'auto'),
         order_index: Number(s.order_index ?? idx) || idx,
+        enabled: s.enabled !== false,
         credentials: {}
       };
       if (out.type === 'danbooru') {
@@ -743,10 +794,18 @@
       const r = await api.sitesGetRemote();
       if (r?.ok && Array.isArray(r.sites)) {
         const cfg = await loadConfigWeb();
-        const next = { ...cfg, sites: r.sites };
+        // older servers don't send `enabled`; fall back to the local flag
+        const keyOf = (s) => `${(s?.type || '').toLowerCase()}|${normBase(s?.baseUrl || s?.base_url || '')}`;
+        const localByKey = new Map((cfg.sites || []).map((s) => [keyOf(s), s]));
+        const sites = r.sites.map((s) => {
+          if (typeof s?.enabled === 'boolean') return s;
+          const local = localByKey.get(keyOf(s));
+          return local && local.enabled === false ? { ...s, enabled: false } : s;
+        });
+        const next = { ...cfg, sites };
         await saveConfigWeb(next);
         window.events?.emit?.('config_changed', next);
-        return { ok: true, count: r.sites.length };
+        return { ok: true, count: sites.length };
       }
       return { ok: false, error: 'No sites' };
     } catch (e) {
@@ -756,6 +815,7 @@
 
   // SSE with debounce to avoid storms
   let sse = { es: null, base: '', token: '' };
+  let sseConnecting = false;
   let favSyncTimer = null;
   let favSyncInFlight = false;
   let favSyncNeedsRerun = false;
@@ -779,26 +839,57 @@
     }, 250);
   }
 
-  function openSse() {
+  async function openSse() {
     try {
       const acc = accLoad(); const base = accGetBase(acc); const token = acc?.token || '';
       if (!base || !token) return closeSse();
       if (sse.es && sse.base === base && sse.token === token) return;
+      if (sseConnecting) { setTimeout(() => openSse(), 1000); return; }
+      sseConnecting = true;
+
+      // EventSource cannot set an Authorization header, so trade the account token for a
+      // short-lived stream ticket rather than leaving it in the URL. Servers older than
+      // 1.2.0 have no ticket endpoint.
+      let credential = '';
+      try {
+        const t = await httpPostJSON(`${base}/api/stream/ticket`, {}, { Authorization: `Bearer ${token}` });
+        if (t?.ticket) credential = `ticket=${encodeURIComponent(t.ticket)}`;
+      } catch {}
+      if (!credential) credential = `access_token=${encodeURIComponent(token)}`;
 
       closeSse();
-      const url = `${base}/api/stream?access_token=${encodeURIComponent(token)}&t=${Date.now()}`;
+      const url = `${base}/api/stream?${credential}&t=${Date.now()}`;
       const es = new EventSource(url, { withCredentials: false });
       sse = { es, base, token };
 
       es.addEventListener('hello', () => {});
       es.addEventListener('ping', () => {});
-      es.addEventListener('fav_changed', () => scheduleFavSync());
+      es.addEventListener('fav_changed', (ev) => {
+        // apply removals directly; a merge-pull would push the fave right back
+        try {
+          const payload = JSON.parse(ev?.data || '{}');
+          if (payload && payload.removed && payload.key) {
+            const k = String(payload.key);
+            const keys = favLoadKeys();
+            if (keys.delete(k)) {
+              const map = favLoadMap();
+              map.delete(k);
+              favSaveKeys(keys);
+              favSaveMap(map);
+            }
+            try { window.__localFavsSet?.delete?.(k); } catch {}
+            window.events?.emit?.('favorites_changed', { ok: true, source: 'sse-remove' });
+            return;
+          }
+        } catch {}
+        scheduleFavSync();
+      });
       es.addEventListener('sites_changed', async () => {
         // Pull fresh sites (including credentials) and update local config
         await pullSitesFromServerAndSave();
       });
       es.onerror = () => { setTimeout(() => { if (sse.es === es) openSse(); }, 3000); };
-    } catch {}
+    } catch {} finally { sseConnecting = false; }
   }
   function closeSse() {
     try { sse.es?.close?.(); } catch {}
@@ -852,10 +943,27 @@
     window.addEventListener('message', handleWebOAuthMessage);
   }
 
+  // OAuth nonce ties a deep-link callback to a login this app actually started,
+  // blocking drive-by streambooru://oauth/... token injection from other apps.
+  const OAUTH_NONCE_KEY = 'sb_oauth_nonce_v1';
+  function setOAuthNonce() {
+    const nonce = (window.crypto?.randomUUID?.() || (Date.now().toString(36) + Math.random().toString(36).slice(2)));
+    try { localStorage.setItem(OAUTH_NONCE_KEY, JSON.stringify({ nonce, exp: Date.now() + 15 * 60 * 1000 })); } catch {}
+    return nonce;
+  }
+  function consumeOAuthNonce(candidate) {
+    let stored = null;
+    try { stored = JSON.parse(localStorage.getItem(OAUTH_NONCE_KEY) || 'null'); } catch {}
+    try { localStorage.removeItem(OAUTH_NONCE_KEY); } catch {}
+    if (!stored || !stored.nonce || Date.now() > (stored.exp || 0)) return false;
+    return !!candidate && candidate === stored.nonce;
+  }
+
   function handleDeepLink(url) {
     try {
       if (!url || !String(url).startsWith('streambooru://')) return;
       const u = new URL(url);
+      if (!consumeOAuthNonce(u.searchParams.get('state') || '')) return;
       const token = u.searchParams.get('token') || '';
       const linked = u.searchParams.get('linked') || '';
       const acc = accLoad();
@@ -903,6 +1011,13 @@
             }
           } catch {}
         });
+        // hardware back closes overlays before exiting the app
+        App.addListener('backButton', () => {
+          try {
+            if (window.SBOverlay?.closeTop?.()) return;
+          } catch {}
+          try { App.exitApp?.(); } catch {}
+        });
       }
     } catch {}
   })();
@@ -914,15 +1029,6 @@
     if (isElectron() && window.api?.openExternal) return window.api.openExternal(safeUrl);
     if (C?.Plugins?.Browser?.open) { await C.Plugins.Browser.open({ url: safeUrl }); return true; }
     window.open(safeUrl, '_blank', 'noopener,noreferrer'); return true;
-  }, share: async (opts = {}) => {
-    if (C?.Plugins?.Share?.share) { await C.Plugins.Share.share(opts); return true; }
-    if (navigator.share) { const { title, text, url } = opts; await navigator.share({ title, text, url }); return true; }
-    return false;
-  }, saveImageFromUrl: async (url, filename = 'image.jpg') => {
-    const res = await downloadMediaWeb({ url, fileName: filename });
-    if (res?.ok) return true;
-    if (isElectron() && window.api?.saveImage) return window.api.saveImage(url, filename);
-    return false;
   }, fetchMediaBlob, mediaproxyUrl, downloadMediaWeb, downloadBulkWeb, getVersion: async () => {
     if (isElectron() && window.api?.getVersion) return window.api.getVersion();
     if (C?.Plugins?.App?.getInfo) { try { const info = await C.Plugins.App.getInfo(); return info?.version || 'android'; } catch {} }
@@ -941,7 +1047,6 @@
     window.api.proxyImage = proxyImage;
     window.api.fetchMediaBlob = fetchMediaBlob;
     window.api.mediaproxyUrl = mediaproxyUrl;
-    window.apiHostNeedsProxy = window.apiHostNeedsProxy || hostNeedsProxy;
   })();
 
   if (!isElectron()) {
@@ -949,22 +1054,36 @@
       loadConfig: loadConfigWeb,
       saveConfig: saveConfigWeb,
       fetchBooru: fetchBooruWeb,
+      autocomplete: async ({ site, prefix, limit } = {}) => {
+        try {
+          const suggestions = await autocompleteWeb({ site, prefix, limit });
+          return { ok: true, suggestions };
+        } catch (e) {
+          return { ok: false, suggestions: [], error: String(e?.message || e) };
+        }
+      },
       openExternal: window.Platform.openExternal,
       downloadImage: downloadMediaWeb,
       downloadBulk: downloadBulkWeb,
+      downloadBulkCancel: downloadBulkCancelWeb,
       proxyImage,
-      booruFavorite: async () => ({ ok: false, error: 'Not supported on Android build' }),
       authCheck: async () => ({ ok: true }),
       rateLimit: async () => ({ ok: true }),
-      rateLimitCheck: async () => ({ ok: true }),
-      favKeys,
-      favList,
-      favToggle,
-      favClear: async () => { favSaveKeys(new Set()); favSaveMap(new Map()); return { ok: true }; },
+      favCounts: async (keys) => {
+        try {
+          const base = webProxyBase();
+          const list = (Array.isArray(keys) ? keys : []).filter(Boolean).slice(0, 200);
+          if (!base || list.length === 0) return { ok: !!base, counts: {} };
+          const { status, json } = await httpPostJSON(`${base}/api/favourites/counts`, { keys: list });
+          if (status < 400 && json?.ok) return { ok: true, counts: json.counts || {} };
+          return { ok: false, counts: {} };
+        } catch {
+          return { ok: false, counts: {} };
+        }
+      },
       getLocalFavoriteKeys: favKeys,
       getLocalFavorites: favList,
       toggleLocalFavorite: favToggle,
-      clearLocalFavorites: async () => { favSaveKeys(new Set()); favSaveMap(new Map()); return { ok: true }; },
 
       // Accounts
       accountGet: async () => {
@@ -1027,7 +1146,7 @@
         const acc = accLoad();
         let base = accGetBase(acc);
         if (!base) return { ok: false, error: 'No server selected' };
-        const deepLink = 'streambooru://oauth/discord';
+        const deepLink = `streambooru://oauth/discord?state=${encodeURIComponent(setOAuthNonce())}`;
         await window.Platform.openExternal(`${base}/auth/discord?redirect_uri=${encodeURIComponent(deepLink)}`);
         return { ok: true, pending: true };
       },
@@ -1036,7 +1155,7 @@
         const acc = accLoad(); const base = accGetBase(acc);
         if (!base || !acc.token) return { ok: false, error: 'Not logged in' };
         try {
-          const next = isWebBrowser() ? webOAuthRedirect() : 'streambooru://oauth/linked';
+          const next = isWebBrowser() ? webOAuthRedirect() : `streambooru://oauth/linked?state=${encodeURIComponent(setOAuthNonce())}`;
           const start = await httpGetJSON(`${base}/api/link/discord/start?next=${encodeURIComponent(next)}`, { Authorization: `Bearer ${acc.token}` });
           if (start?.ok && start.url) {
             if (isWebBrowser()) return openWebOAuth(start.url);

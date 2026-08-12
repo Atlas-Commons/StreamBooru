@@ -4,6 +4,9 @@
   <meta charset="utf-8" />
   <title>StreamBooru</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#181b20" />
+  <link rel="icon" type="image/png" href="favicon.png" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob: https: http:; media-src 'self' data: blob: https: http:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src https: http:;">
   <link rel="stylesheet" href="./styles.css" />
   <link rel="stylesheet" href="./mobile.css" media="(max-width: 900px)" />
@@ -12,6 +15,8 @@
   <script src="./js/query-dialect.js"></script>
   <script src="./js/booru-client.js"></script>
   <script src="./js/platform.js"></script>
+  <script src="./js/overlay.js"></script>
+  <script src="./js/toast.js"></script>
 
   <header class="topbar">
     <div class="left">
@@ -20,23 +25,25 @@
     </div>
 
     <div class="center">
-      <div class="tabs">
-        <button id="tab-new" class="tab active" data-view="new">New</button>
-        <button id="tab-popular" class="tab" data-view="popular">Popular</button>
-        <button id="tab-search" class="tab" data-view="search">Search</button>
-        <button id="tab-faves" class="tab" data-view="faves">Favourites</button>
+      <div class="tabs" role="tablist" aria-label="Views">
+        <button id="tab-new" class="tab active" data-view="new" role="tab" aria-selected="true">New</button>
+        <button id="tab-popular" class="tab" data-view="popular" role="tab" aria-selected="false">Popular</button>
+        <button id="tab-search" class="tab" data-view="search" role="tab" aria-selected="false">Search</button>
+        <button id="tab-faves" class="tab" data-view="faves" role="tab" aria-selected="false">Favourites</button>
       </div>
 
       <form id="search-form" class="search" autocomplete="off">
-        <input id="tag-search" type="text" placeholder="Search tags…" aria-label="Search tags" />
+        <input id="tag-search" type="text" placeholder="Search tags…" aria-label="Search tags" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="tag-suggest" />
         <button id="tag-search-btn" type="submit">Search</button>
         <button id="tag-clear-btn" type="button" title="Clear search" aria-label="Clear search">✕</button>
+        <div id="tag-suggest" class="suggest hidden" role="listbox" aria-label="Tag suggestions"></div>
       </form>
     </div>
 
     <div class="right">
-      <button id="btn-download-all" class="accent" title="Download all visible results. Shift-click for naming options.">Download All</button>
+      <button id="btn-download-all" class="accent" title="Download all visible results. Right-click or Shift-click for naming options.">Download All</button>
       <button id="btn-manage-sites" class="ghost" title="Manage sources">Sites</button>
+      <button id="btn-settings" class="ghost" title="Settings">Settings</button>
       <button id="btn-account" class="ghost" title="Account and sync">Account</button>
     </div>
   </header>
@@ -63,6 +70,7 @@
       <div class="menu-title">Actions</div>
       <button id="mnu-download-all" class="menu-item">Download All</button>
       <button id="mnu-manage-sites" class="menu-item">Manage Sites</button>
+      <button id="mnu-settings" class="menu-item">Settings</button>
       <button id="mnu-account" class="menu-item">Account</button>
     </div>
   </nav>
@@ -78,13 +86,16 @@
     </div>
   </section>
 
+  <div id="source-chips" class="source-chips" role="group" aria-label="Sources" hidden></div>
+
   <main id="feed" class="grid" aria-live="polite"></main>
 
   <div id="loading" class="loading hidden" role="status" aria-live="polite">Loading…</div>
 
   <div id="site-manager" class="modal hidden" aria-hidden="true" tabindex="-1"></div>
   <div id="account-manager" class="modal hidden" aria-hidden="true" tabindex="-1"></div>
-  <div id="lightbox" class="lightbox hidden" aria-hidden="true"></div>
+  <div id="settings-manager" class="modal hidden" aria-hidden="true" tabindex="-1"></div>
+  <div id="lightbox" class="lightbox hidden" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Media viewer"></div>
 
   <div id="download-options" class="popover hidden" role="dialog" aria-modal="true" aria-label="Download options">
     <div class="pop-row">
@@ -98,6 +109,10 @@
         <option value="__custom__">Custom…</option>
       </select>
     </div>
+    <div class="pop-row hidden" id="custom-template-row">
+      <label for="custom-template" class="pop-label">Custom format</label>
+      <input id="custom-template" class="pop-control" type="text" spellcheck="false" placeholder="{site}-{id}-{artist}" />
+    </div>
     <div class="pop-hint">
       Tokens: {site} {site_type} {id} {score} {favorites} {rating} {width} {height} {index} {ext} {original_name} {created} {created_yyyy} {created_mm} {created_dd} {created_hhmm} {artist} {copyright} {character}
     </div>
@@ -106,7 +121,17 @@
     </div>
   </div>
 
+  <div id="bulk-progress" class="bulk-progress hidden" role="status" aria-live="polite">
+    <div class="bulk-progress-text">
+      <span id="bulk-progress-label">Downloading…</span>
+      <span id="bulk-progress-count"></span>
+    </div>
+    <div class="bulk-progress-track"><div id="bulk-progress-bar" class="bulk-progress-bar"></div></div>
+    <button id="bulk-progress-cancel" class="btn-small" type="button">Cancel</button>
+  </div>
+
   <script src="./components/siteManager.js"></script>
+  <script src="./components/settings.js"></script>
   <script src="./components/postCard.js"></script>
   <script src="./components/lightbox.js"></script>
   <script src="./js/mobile-menu.js"></script>

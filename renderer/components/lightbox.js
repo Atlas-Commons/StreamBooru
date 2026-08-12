@@ -31,17 +31,10 @@
   const isAndroid = () => !!(window.Platform && typeof window.Platform.isAndroid === 'function' && window.Platform.isAndroid());
   const isElectron = () => !!(window.Platform && typeof window.Platform.isElectron === 'function' && window.Platform.isElectron());
   const isWebBrowser = () => !isElectron() && !isAndroid();
-  const hostMatches = (host, domain) => host === domain || host.endsWith(`.${domain}`);
+  const isHotlinkHost = (u) => !!window.isHotlinkHost?.(u);
 
-  function isHotlinkHost(u) {
-    try {
-      const h = new URL(u).hostname.toLowerCase();
-      return ['donmai.us', 'yande.re', 'konachan.com', 'konachan.net', 'e621.net', 'e926.net',
-        'e621.media', 'e926.media', 'derpibooru.org', 'derpicdn.net', 'gelbooru.com',
-        'safebooru.org', 'rule34.xxx', 'realbooru.com', 'xbooru.com', 'tbib.org',
-        'hypnohub.net'].some((domain) => hostMatches(h, domain));
-    } catch { return false; }
-  }
+  const notify = (msg, opts) => { if (typeof window.toast === 'function') window.toast(msg, opts); else alert(msg); };
+  const notifyError = (msg) => notify(msg, { type: 'error' });
 
   const setImageWithFallback = function (img, url) {
     if (!url) return;
@@ -171,16 +164,20 @@
 
   function makeTip(msg) {
     const tip = document.createElement('div');
-    tip.style.fontSize = '12px';
-    tip.style.color = '#a9b0c0';
-    tip.style.marginTop = '4px';
-    tip.style.textAlign = 'center';
+    tip.className = 'lb-tip';
     tip.textContent = msg;
     return tip;
   }
 
-  function createZoomController(viewport, mediaEl) {
-    const state = { scale: 1, tx: 0, ty: 0, dragging: false, lastX: 0, lastY: 0 };
+  // Zoom/pan/pinch controller, plus swipe nav/dismiss for touch
+  function createZoomController(viewport, mediaEl, { onPrev, onNext, onDismiss } = {}) {
+    const state = { scale: 1, tx: 0, ty: 0 };
+    const pointers = new Map();
+    let panLast = null;
+    let pinch = null; // { startDist, startScale }
+    let swipe = null; // { x, y, t }
+    let lastTap = { t: 0, x: 0, y: 0 };
+    const isImage = mediaEl.tagName === 'IMG';
 
     const apply = () => {
       mediaEl.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.scale})`;
@@ -211,46 +208,117 @@
       apply();
     };
 
+    const zoomIn = () => setScale(state.scale + 0.25);
+    const zoomOut = () => setScale(state.scale - 0.25);
     const reset = () => setScale(1);
 
     viewport.addEventListener('wheel', (e) => {
-      if (mediaEl.tagName !== 'IMG') return;
+      if (!isImage) return;
       e.preventDefault();
       const delta = e.deltaY < 0 ? 0.15 : -0.15;
       setScale(state.scale + delta, e.clientX, e.clientY);
     }, { passive: false });
 
     mediaEl.addEventListener('dblclick', (e) => {
-      if (mediaEl.tagName !== 'IMG') return;
+      if (!isImage) return;
       e.preventDefault();
       if (state.scale > 1.01) reset();
       else setScale(2, e.clientX, e.clientY);
     });
 
-    mediaEl.addEventListener('pointerdown', (e) => {
-      if (state.scale <= 1.01) return;
-      state.dragging = true;
-      state.lastX = e.clientX;
-      state.lastY = e.clientY;
-      mediaEl.setPointerCapture?.(e.pointerId);
+    const pinchDistance = () => {
+      const pts = [...pointers.values()];
+      return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+    };
+    const pinchMidpoint = () => {
+      const pts = [...pointers.values()];
+      return { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+    };
+
+    viewport.addEventListener('pointerdown', (e) => {
+      if (!isImage) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+      viewport.setPointerCapture?.(e.pointerId);
+      if (pointers.size === 2) {
+        pinch = { startDist: pinchDistance(), startScale: state.scale };
+        panLast = null;
+        swipe = null;
+        return;
+      }
+      if (state.scale > 1.01) {
+        panLast = { x: e.clientX, y: e.clientY };
+      } else if (e.pointerType === 'touch') {
+        swipe = { x: e.clientX, y: e.clientY, t: Date.now() };
+      }
     });
-    mediaEl.addEventListener('pointermove', (e) => {
-      if (!state.dragging) return;
-      state.tx += e.clientX - state.lastX;
-      state.ty += e.clientY - state.lastY;
-      state.lastX = e.clientX;
-      state.lastY = e.clientY;
-      clampPan();
-      apply();
+
+    viewport.addEventListener('pointermove', (e) => {
+      if (!pointers.has(e.pointerId)) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+      if (pinch && pointers.size >= 2) {
+        const mid = pinchMidpoint();
+        setScale(pinch.startScale * (pinchDistance() / pinch.startDist), mid.x, mid.y);
+        return;
+      }
+      if (panLast) {
+        state.tx += e.clientX - panLast.x;
+        state.ty += e.clientY - panLast.y;
+        panLast = { x: e.clientX, y: e.clientY };
+        clampPan();
+        apply();
+      }
     });
-    mediaEl.addEventListener('pointerup', () => { state.dragging = false; });
-    mediaEl.addEventListener('pointercancel', () => { state.dragging = false; });
+
+    const endPointer = (e) => {
+      const wasSwipe = swipe && pointers.size === 1 && state.scale <= 1.01;
+      pointers.delete(e.pointerId);
+      if (pointers.size < 2) pinch = null;
+      if (pointers.size === 0) panLast = null;
+
+      if (e.type === 'pointercancel') { swipe = null; return; }
+
+      // Double-tap toggles zoom (touch)
+      if (e.pointerType === 'touch') {
+        const now = Date.now();
+        const dt = now - lastTap.t;
+        const dist = Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y);
+        if (dt < 300 && dist < 28) {
+          lastTap = { t: 0, x: 0, y: 0 };
+          swipe = null;
+          if (state.scale > 1.01) reset();
+          else setScale(2, e.clientX, e.clientY);
+          return;
+        }
+        lastTap = { t: now, x: e.clientX, y: e.clientY };
+      }
+
+      if (wasSwipe) {
+        const dx = e.clientX - swipe.x;
+        const dy = e.clientY - swipe.y;
+        const dt = Date.now() - swipe.t;
+        swipe = null;
+        if (dt < 700) {
+          if (Math.abs(dx) > 64 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+            if (dx < 0) onNext?.(); else onPrev?.();
+            return;
+          }
+          if (dy > 88 && dy > Math.abs(dx) * 1.4) {
+            onDismiss?.();
+          }
+        }
+      } else {
+        swipe = null;
+      }
+    };
+    viewport.addEventListener('pointerup', endPointer);
+    viewport.addEventListener('pointercancel', endPointer);
 
     return {
-      zoomIn: () => setScale(state.scale + 0.25),
-      zoomOut: () => setScale(state.scale - 0.25),
+      zoomIn,
+      zoomOut,
       reset,
       handleKey(key) {
+        if (!isImage) return false;
         if (key === '+' || key === '=') { zoomIn(); return true; }
         if (key === '-' || key === '_') { zoomOut(); return true; }
         if (key === '0') { reset(); return true; }
@@ -260,7 +328,7 @@
   }
 
   const hasRemote = (post) => typeof window.hasRemoteFavoriteSupport === 'function' && window.hasRemoteFavoriteSupport(post);
-  const toggleRemote = (post) => window.toggleRemoteFavoriteRemote?.(post);
+  const toggleRemote = (post) => window.toggleRemoteFavorite?.(post);
 
   const pickFullUrl = function (post) {
     const f = post.file_url || '';
@@ -276,10 +344,102 @@
     return '';
   };
 
+  const keyOfPost = (p) => `${p?.site?.baseUrl || ''}#${p?.id}`;
+  const galleryItems = () => (typeof window.getGalleryItems === 'function' ? window.getGalleryItems() || [] : []);
+  const indexOfKey = (key) => galleryItems().findIndex((p) => keyOfPost(p) === key);
+
+  // remembered for the session
+  let tagsPanelOpen = false;
+
+  function prefetchNeighbours(items, index) {
+    for (const j of [index - 1, index + 1]) {
+      const p = items[j];
+      if (!p) continue;
+      const url = pickFullUrl(p);
+      if (!url || isVideoUrl(url)) continue;
+      try {
+        if ((isAndroid() || isWebBrowser()) && isHotlinkHost(url)) {
+          window.api.proxyImage?.(url)?.catch?.(() => {});
+        } else {
+          const img = new Image();
+          img.decoding = 'async';
+          img.src = url;
+        }
+      } catch {}
+    }
+  }
+
+  function buildTagPanel(lb, post) {
+    const panel = document.createElement('div');
+    panel.className = 'lb-tags';
+
+    const bare = (t) => { const i = String(t).indexOf(':'); return i > 0 ? String(t).slice(i + 1) : String(t); };
+    const categorized = new Set(
+      [...(post.artist || []), ...(post.copyright || []), ...(post.character || [])].map(String)
+    );
+    const general = (post.tags || []).filter((t) => !categorized.has(String(t)) && !categorized.has(bare(t)));
+
+    const searchValueFor = (cls, tag) => {
+      if (post?.site?.type === 'derpibooru') {
+        if (cls === 'artist') return `artist:${tag}`;
+        if (cls === 'character') return `oc:${tag}`;
+      }
+      return tag;
+    };
+
+    const groups = [
+      ['Artist', post.artist || [], 'artist'],
+      ['Copyright', post.copyright || [], 'copyright'],
+      ['Character', post.character || [], 'character'],
+      ['Tags', general, 'general']
+    ];
+
+    let any = false;
+    for (const [label, tags, cls] of groups) {
+      if (!tags.length) continue;
+      any = true;
+      const row = document.createElement('div');
+      row.className = 'lb-tag-group';
+      const heading = document.createElement('span');
+      heading.className = 'lb-tag-label';
+      heading.textContent = label;
+      row.appendChild(heading);
+      for (const tag of tags.slice(0, 100)) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = `tag-chip tag--${cls}`;
+        chip.textContent = tag;
+        chip.title = `Search ${tag}`;
+        chip.addEventListener('click', () => {
+          hide(lb);
+          window.searchForTag?.(searchValueFor(cls, tag));
+        });
+        row.appendChild(chip);
+      }
+      panel.appendChild(row);
+    }
+
+    const facts = [];
+    if (post.rating) facts.push(`Rating: ${post.rating}`);
+    if (post.width && post.height) facts.push(`${post.width}×${post.height}`);
+    if (Number.isFinite(Number(post.score))) facts.push(`Score ${post.score}`);
+    if (post.site?.name || post.site?.type) facts.push(post.site?.name || post.site?.type);
+    if (facts.length) {
+      const meta = document.createElement('div');
+      meta.className = 'lb-tag-meta';
+      meta.textContent = facts.join(' · ');
+      panel.appendChild(meta);
+      any = true;
+    }
+
+    return any ? panel : null;
+  }
+
   const renderForIndex = function (lb, index) {
-    const items = (typeof window.getGalleryItems === 'function') ? window.getGalleryItems() : [];
+    const items = galleryItems();
     if (!items || !items[index]) return;
     const post = items[index];
+    lb._currentKey = keyOfPost(post);
 
     const previousVideo = lb.querySelector('video');
     if (previousVideo) previousVideo._disposed = true;
@@ -319,6 +479,16 @@
       mediaStatus.hidden = state === 'ready' || !text;
     };
     setMediaStatus('loading', isVid ? 'Loading video…' : 'Loading image…');
+
+    // Resolve position by key at click time; the feed may have re-sorted
+    const navigate = (direction) => {
+      const currentItems = galleryItems();
+      const cur = indexOfKey(lb._currentKey);
+      const from = cur >= 0 ? cur : Math.min(index, currentItems.length - 1);
+      const target = Math.max(0, Math.min(currentItems.length - 1, from + direction));
+      if (target === from) return;
+      renderForIndex(lb, target);
+    };
 
     let mediaEl;
     let tipEl = null;
@@ -387,28 +557,26 @@
       setImageWithFallback(img, full);
       img.alt = post.tags?.join(' ') || '';
       mediaEl = img;
-      zoomCtl = createZoomController(viewport, img);
     }
 
     viewport.appendChild(mediaEl);
     viewport.appendChild(mediaStatus);
+    zoomCtl = createZoomController(viewport, mediaEl, {
+      onPrev: () => navigate(-1),
+      onNext: () => navigate(1),
+      onDismiss: () => hide(lb)
+    });
 
     const toolbar = document.createElement('div');
     toolbar.className = 'toolbar';
 
     const prevBtn = document.createElement('button');
     prevBtn.textContent = '← Prev';
-    prevBtn.addEventListener('click', () => {
-      const next = index - 1 >= 0 ? index - 1 : 0;
-      renderForIndex(lb, next);
-    });
+    prevBtn.addEventListener('click', () => navigate(-1));
 
     const nextBtn = document.createElement('button');
     nextBtn.textContent = 'Next →';
-    nextBtn.addEventListener('click', () => {
-      const next = index + 1 < items.length ? index + 1 : items.length - 1;
-      renderForIndex(lb, next);
-    });
+    nextBtn.addEventListener('click', () => navigate(1));
 
     const openBtn = document.createElement('button');
     openBtn.textContent = 'Open Media';
@@ -433,7 +601,7 @@
           siteName: post.site?.name || post.site?.baseUrl || 'site',
           fileName: nameGuess
         });
-        if (!res?.ok && !res?.cancelled) { alert('Download failed' + (res?.error ? `: ${res.error}` : '')); }
+        if (!res?.ok && !res?.cancelled) { notifyError('Download failed' + (res?.error ? `: ${res.error}` : '')); }
         else if (res?.ok) {
           dlBtn.textContent = 'Downloaded ✓';
           setTimeout(() => { if (dlBtn.isConnected) dlBtn.textContent = previousLabel; }, 1800);
@@ -444,7 +612,7 @@
       }
     });
 
-    if (zoomCtl) {
+    if (mediaEl.tagName === 'IMG') {
       const zoomInBtn = document.createElement('button');
       zoomInBtn.textContent = 'Zoom +';
       zoomInBtn.addEventListener('click', () => zoomCtl.zoomIn());
@@ -462,31 +630,49 @@
     let remoteBtn = null;
     if (hasRemote(post)) {
       remoteBtn = document.createElement('button');
-      const setTxt = (f) => { remoteBtn.textContent = f ? '♥ Favourited' : '♥ Favourite'; };
+      remoteBtn.title = 'Favourite on the source site using your API credentials';
+      const setTxt = (f) => { remoteBtn.textContent = f ? '♥ Faved on site' : '♡ Fave on site'; };
       let fav = !!(post.user_favorited || post._remote_favorited);
       setTxt(fav);
       remoteBtn.addEventListener('click', async () => {
         remoteBtn.disabled = true;
         const res = await toggleRemote(post);
         if (res?.ok) { fav = !!res.favorited; setTxt(fav); }
-        else { alert('Favourite failed' + (res?.error ? `: ${res.error}` : '')); }
+        else { notifyError('Site favourite failed' + (res?.error ? `: ${res.error}` : '')); }
         remoteBtn.disabled = false;
       });
     }
 
     const localBtn = document.createElement('button');
-    const setLocal = (saved) => { localBtn.textContent = saved ? '♥ Saved (local)' : '♥ Save (local)'; };
+    localBtn.title = 'Add to your StreamBooru favourites (does not download the file)';
+    const setLocal = (faved) => { localBtn.textContent = faved ? '♥ Faved' : '♡ Fave'; };
     setLocal(window.isLocalFavorite?.(post) === true);
     localBtn.addEventListener('click', async () => {
       const res = await window.toggleLocalFavorite?.(post);
       setLocal(res?.favorited);
     });
 
+    const tagPanel = buildTagPanel(lb, post);
+    let tagsBtn = null;
+    if (tagPanel) {
+      tagPanel.hidden = !tagsPanelOpen;
+      tagsBtn = document.createElement('button');
+      tagsBtn.setAttribute('aria-expanded', String(tagsPanelOpen));
+      tagsBtn.textContent = tagsPanelOpen ? 'Tags ▲' : 'Tags ▼';
+      tagsBtn.addEventListener('click', () => {
+        tagsPanelOpen = !tagsPanelOpen;
+        tagPanel.hidden = !tagsPanelOpen;
+        tagsBtn.setAttribute('aria-expanded', String(tagsPanelOpen));
+        tagsBtn.textContent = tagsPanelOpen ? 'Tags ▲' : 'Tags ▼';
+      });
+    }
+
     toolbar.appendChild(prevBtn);
     toolbar.appendChild(nextBtn);
     toolbar.appendChild(openBtn);
     toolbar.appendChild(postBtn);
     toolbar.appendChild(dlBtn);
+    if (tagsBtn) toolbar.appendChild(tagsBtn);
     if (remoteBtn) toolbar.appendChild(remoteBtn);
     toolbar.appendChild(localBtn);
 
@@ -494,13 +680,14 @@
     content.appendChild(viewport);
     if (tipEl) content.appendChild(tipEl);
     content.appendChild(toolbar);
+    if (tagPanel) content.appendChild(tagPanel);
     lb.appendChild(content);
 
     const keyHandler = (e) => {
       if (e.key === 'Escape') { e.preventDefault(); hide(lb); return; }
       if (zoomCtl?.handleKey(e.key)) { e.preventDefault(); return; }
-      if (e.key === 'ArrowLeft') { e.preventDefault(); prevBtn.click(); }
-      if (e.key === 'ArrowRight') { e.preventDefault(); nextBtn.click(); }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); navigate(-1); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); navigate(1); }
     };
     document.removeEventListener('keydown', lb._keyHandler, true);
     lb._keyHandler = keyHandler;
@@ -512,6 +699,8 @@
       if (Date.now() < (lb._openGuardUntil || 0)) return;
       if (e.target === lb) hide(lb);
     };
+
+    prefetchNeighbours(items, index);
   };
 
   const hide = function (lb) {
@@ -527,6 +716,9 @@
     lb.setAttribute('aria-hidden', 'true');
     lb.innerHTML = '';
     lb.onclick = null;
+    lb._currentKey = null;
+    try { lb._overlayRelease?.(); } catch {}
+    lb._overlayRelease = null;
   };
 
   window.openLightboxAt = function (index) {
@@ -534,12 +726,16 @@
     lb.classList.remove('hidden');
     lb.setAttribute('aria-hidden', 'false');
     lb._openGuardUntil = Date.now() + 350;
+    if (!lb._overlayRelease) {
+      lb._overlayRelease = window.SBOverlay?.open?.('lightbox', { close: () => hide(lb), root: lb }) || null;
+    }
     renderForIndex(lb, index);
+    setTimeout(() => { lb.querySelector('.close')?.focus?.(); }, 0);
   };
 
   window.openLightbox = function (post) {
-    const items = (typeof window.getGalleryItems === 'function') ? window.getGalleryItems() : [];
-    const idx = items.findIndex((p) => `${p?.site?.baseUrl || ''}#${p?.id}` === `${post?.site?.baseUrl || ''}#${post?.id}`);
+    const items = galleryItems();
+    const idx = items.findIndex((p) => keyOfPost(p) === keyOfPost(post));
     window.openLightboxAt(idx >= 0 ? idx : 0);
   };
 })();
