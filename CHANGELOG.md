@@ -3,6 +3,25 @@
 All notable changes to this project will be documented in this file.
 The format roughly follows Keep a Changelog, and dates are in YYYY-MM-DD.
 
+## [v1.2.0-beta.2] — 2026-08-12
+
+Fixes for the problems beta 1 shipped with, plus the deployment fixes that got the sync server running again. No new features.
+
+### Fixed
+* The Favourites feed rebuilt itself on every sync echo, flashing the grid and dragging the reader back to the top. The server broadcasts our own writes back to us, and both clients announced a change even when the merge settled on the set they already held; a save now announces one only when the stored set actually differs, and a merge no longer re-pushes local-only faves the server has declined to keep.
+* Reaching the bottom of Favourites reloaded the list and jumped to the top. Favourites arrive in a single pass, so the view now tells infinite scroll there is no next page.
+* Hiding a source could strand the feed on "Loading…" for good: a superseded Popular batch returned without releasing the loading flag, and scrolling, refreshing, and every later fetch are gated on it.
+* Thumbnails degraded into "?" placeholders the further you scrolled. Every video preview began downloading as its card was built, and enough of them saturated the connections a browser allows per host, starving the images below. Previews now load only within a screen of the viewport and pause when they leave it.
+* Danbooru images failed to load. Seven CDNs were being proxied for hotlink protection they do not enforce; an audit (`scripts/test-hotlink-hosts.js`) trimmed the list to the hosts that actually refuse a foreign Referer, which also cuts proxy traffic.
+* Linux builds showed the generic Wayland icon. A compositor resolves a window's icon by matching its app_id to an installed desktop file, and nothing tied the entry to Electron's `streambooru` app_id. The entry now declares `StartupWMClass` and tracks the app_id through `desktopName`, and the build installs the nine icon sizes an icon theme expects instead of a single 1024px file that every panel had to downscale.
+* The sync server crash-looped on boot. Bun 1.3 hands an entrypoint's `app` export to `Bun.serve()`, which rejected an Express app for having no fetch handler; the server now boots through `src/serve.js`, which exports nothing, and Nixpacks pins Bun so the runtime cannot change under a deploy that changed no code.
+* Server deploys failed with `Module not found "scripts/build-webapp.mjs"` because `.dockerignore` excluded the directory holding the web app build script.
+* The Flatpak release job failed on `apt-get` permissions, and its `bwrap` calls needed the unprivileged user namespaces recent Ubuntu confines by default.
+
+### Changed
+* Proxied media carries `s-maxage` and `immutable` and no longer varies on `Origin`, so a CDN can hold it at the edge: images load faster and the source sites see fewer requests.
+* Request logging reports 4xx and 5xx only, with status and duration, instead of every request — a feed proxies a thumbnail per card, which buried anything useful. Set `LOG_REQUESTS=1` for the lot. The server also answers `/custom_error`, the path Cloudflare fetches for its error pages.
+
 ## [v1.2.0-beta.1] — 2026-08-12
 
 ### Highlights
