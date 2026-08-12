@@ -1,10 +1,19 @@
+/* Kept in step with the app's dark theme in renderer/styles.css. */
 :root {
-  --bg: #0f1115;
-  --panel: #151822;
-  --text: #e6e6e6;
-  --muted: #a9b0c0;
-  --accent: #6aa2ff;
-  --border: #24293a;
+  --bg: #101216;
+  --panel: #181b20;
+  --text: #e8eaf0;
+  --muted: #979da9;
+  --accent: #22e3ff;
+  --accent-2: #ff2fb0;
+  --accent-grad: linear-gradient(135deg, #22e3ff, #ff2fb0);
+  --accent-soft: rgba(34, 227, 255, 0.12);
+  --accent-line: rgba(34, 227, 255, 0.40);
+  --on-accent: #04121a;
+  --border: #2b3039;
+  --bad: #ff6b6b;
+  --good: #52d273;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -29,11 +38,17 @@ html, body {
   margin-bottom: 40px;
 }
 
+.hero img {
+  width: 72px;
+  height: 72px;
+  margin-bottom: 14px;
+}
+
 .logo {
   font-size: clamp(2rem, 5vw, 3rem);
   font-weight: 700;
   letter-spacing: -0.02em;
-  background: linear-gradient(135deg, var(--text) 0%, var(--accent) 100%);
+  background: var(--accent-grad);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -64,7 +79,7 @@ html, body {
 }
 
 .card.primary {
-  border-color: rgba(106, 162, 255, 0.35);
+  border-color: var(--accent-line);
 }
 
 .card h2 {
@@ -83,7 +98,7 @@ html, body {
   padding: 10px 18px;
   border-radius: 8px;
   border: 1px solid var(--border);
-  background: #1a1f2e;
+  background: #1f242c;
   color: var(--text);
   text-decoration: none;
   font-weight: 600;
@@ -93,13 +108,13 @@ html, body {
 
 .btn:hover {
   border-color: var(--accent);
-  background: #1e2436;
+  background: #262c35;
 }
 
 .btn.accent {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #0f1115;
+  background: var(--accent-grad);
+  border-color: transparent;
+  color: var(--on-accent);
 }
 
 .btn.accent:hover {

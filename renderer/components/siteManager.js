@@ -354,7 +354,7 @@
         ? 'Optional: an API key (account settings → API Key) applies your content filters; a Filter ID overrides the default filter.'
         : 'No authentication for this engine.';
 
-    const authField = function (ph, key) {
+    const authField = function (ph, key, secret) {
       const input = document.createElement('input');
       input.placeholder = ph;
       input.value = s.credentials[key] || '';
@@ -362,7 +362,29 @@
         s.credentials[key] = input.value.trim();
         emitChange();
       });
-      return input;
+      if (!secret) return input;
+
+      input.type = 'password';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      const wrap = document.createElement('div');
+      wrap.className = 'secret-field';
+      const reveal = document.createElement('button');
+      reveal.type = 'button';
+      reveal.className = 'secret-reveal';
+      reveal.textContent = 'Show';
+      reveal.title = `Show ${ph}`;
+      reveal.setAttribute('aria-pressed', 'false');
+      reveal.addEventListener('click', () => {
+        const hidden = input.type === 'password';
+        input.type = hidden ? 'text' : 'password';
+        reveal.textContent = hidden ? 'Hide' : 'Show';
+        reveal.title = `${hidden ? 'Hide' : 'Show'} ${ph}`;
+        reveal.setAttribute('aria-pressed', String(hidden));
+      });
+      wrap.appendChild(input);
+      wrap.appendChild(reveal);
+      return wrap;
     };
 
     const rebuildAuth = function () {
@@ -370,18 +392,18 @@
       authWrap.appendChild(authHint);
       if (s.type === 'danbooru') {
         authWrap.appendChild(authField('Login', 'login'));
-        authWrap.appendChild(authField('API Key', 'api_key'));
+        authWrap.appendChild(authField('API Key', 'api_key', true));
       } else if (s.type === 'moebooru') {
         authWrap.appendChild(authField('Login', 'login'));
-        authWrap.appendChild(authField('Password Hash', 'password_hash'));
+        authWrap.appendChild(authField('Password Hash', 'password_hash', true));
       } else if (s.type === 'gelbooru') {
         authWrap.appendChild(authField('User ID', 'user_id'));
-        authWrap.appendChild(authField('API Key', 'api_key'));
+        authWrap.appendChild(authField('API Key', 'api_key', true));
       } else if (s.type === 'e621') {
         authWrap.appendChild(authField('Login (optional)', 'login'));
-        authWrap.appendChild(authField('API Key (optional)', 'api_key'));
+        authWrap.appendChild(authField('API Key (optional)', 'api_key', true));
       } else if (s.type === 'derpibooru') {
-        authWrap.appendChild(authField('API Key (optional)', 'key'));
+        authWrap.appendChild(authField('API Key (optional)', 'key', true));
         authWrap.appendChild(authField('Filter ID (optional)', 'filter_id'));
       } else {
         const note = document.createElement('div');

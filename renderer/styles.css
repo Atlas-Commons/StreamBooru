@@ -437,6 +437,15 @@ button:disabled { opacity: 0.5; cursor: default !important; transform: none !imp
   border: 1px dashed var(--border); border-radius: 8px;
 }
 .site-card .hint { font-size: 12px; color: var(--muted); }
+.site-card .secret-field { position: relative; display: flex; }
+.site-card .secret-field input { padding-right: 60px; }
+.site-card .secret-reveal {
+  position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
+  padding: 3px 8px; font-size: 11px; line-height: 1.4;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--muted); cursor: pointer;
+}
+.site-card .secret-reveal:hover { color: var(--text); border-color: var(--accent-line); }
 
 .site-card.compact {
   padding: 10px;
