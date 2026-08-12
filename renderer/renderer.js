@@ -803,9 +803,17 @@ async function fetchBatch() {
     loadingEl.classList.add('hidden');
     if (state.items.length === 0) renderFeedEmptyState('no-faves');
     state.loading = false;
+    // Favourites all arrive in one pass, so there is no next page to ask for. Left
+    // unsaid, reaching the bottom fires the infinite-scroll sentinel, and re-running
+    // this branch re-renders the list and throws the reader back to the top.
+    state.noMoreResults = true;
     updateFeedHeader();
     saveViewCache();
-    if (state.pendingFetch) { state.pendingFetch = false; fetchBatch(); }
+    if (state.pendingFetch) {
+      state.pendingFetch = false;
+      state.noMoreResults = false; // a queued request is a refresh, not another page
+      fetchBatch();
+    }
     return;
   }
 
