@@ -106,7 +106,11 @@ Only relevant if you run your own sync server. Desktop, Android, and web users n
 * Migrations `0006_site_enabled`, `0007_favorites_key_index`, and `0008_favorite_deletions` apply on startup.
 * Clients from 1.1.x keep working against this server, and this release's clients keep working against a 1.1.x server — favourite deletion tracking, fave counts, and the stream ticket simply stay dormant until both sides are updated.
 
-## [v1.1.0-beta.2] — 2026-08-11
+## [v1.1.0-beta.2] — never released
+
+Written up under its own heading, but no build was ever tagged or published: the line went
+from v1.1.0-beta.1 straight to v1.2.0-beta.1. Everything below first reached users there,
+and is kept as its own section because that is how the work was done.
 
 ### Highlights
 * **e621 video playback:** WebM/MP4 media now streams through a range-aware proxy instead of repeatedly reloading or downloading the entire file before playback.
