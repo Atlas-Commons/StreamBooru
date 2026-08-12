@@ -970,19 +970,28 @@ async function fetchPopularStreaming(sites, gen) {
       }
     }).catch(()=>{}).finally(()=>{
       pending--;
-      if (pending === 0) {
-        if (gen !== state.fetchGen) return;
-        if (allSitesEnded() && state.items.length === 0) {
-          renderFeedEmptyState('no-results');
-          state.noMoreResults = true;
-        } else {
-          document.getElementById('loading').classList.add('hidden');
-        }
+      if (pending !== 0) return;
+      // This batch still owns state.loading once its generation goes stale: whatever
+      // superseded it found the flag set and only queued itself. Dropping out here would
+      // leave nothing to clear it, and every route back — scrolling, refresh — is gated
+      // on that same flag, so the feed sits on "Loading…" for good.
+      if (gen !== state.fetchGen) {
         state.loading = false;
         updateFeedHeader();
-        saveViewCache();
         if (state.pendingFetch) { state.pendingFetch = false; fetchBatch(); }
+        else document.getElementById('loading').classList.add('hidden');
+        return;
       }
+      if (allSitesEnded() && state.items.length === 0) {
+        renderFeedEmptyState('no-results');
+        state.noMoreResults = true;
+      } else {
+        document.getElementById('loading').classList.add('hidden');
+      }
+      state.loading = false;
+      updateFeedHeader();
+      saveViewCache();
+      if (state.pendingFetch) { state.pendingFetch = false; fetchBatch(); }
     });
   }
 }
