@@ -230,9 +230,13 @@
 
   // Image fetch helpers (Referer/Origin for hotlinking)
   const hostMatches = (host, domain) => host === domain || host.endsWith(`.${domain}`);
-  const HOTLINK_HOSTS = ['donmai.us', 'yande.re', 'konachan.com', 'konachan.net', 'e621.net', 'e926.net',
-    'e621.media', 'e926.media', 'derpibooru.org', 'derpicdn.net', 'gelbooru.com',
-    'safebooru.org', 'rule34.xxx', 'realbooru.com', 'xbooru.com', 'tbib.org', 'hypnohub.net'];
+  // Only hosts that actually refuse a hotlinked image belong here: everything listed
+  // costs a proxy round trip through the sync server for every thumbnail, and Danbooru's
+  // CDN blocks that server outright, so proxying it broke the images it was meant to
+  // fix. The ones below are unverified rather than confirmed — their APIs would not
+  // serve a sample to test with. Re-check with scripts/test-hotlink-hosts.js.
+  const HOTLINK_HOSTS = ['e926.net', 'e621.media', 'e926.media', 'derpibooru.org', 'derpicdn.net',
+    'gelbooru.com', 'rule34.xxx', 'realbooru.com', 'xbooru.com', 'hypnohub.net'];
   function isHotlinkHost(u) {
     try {
       const h = new URL(u).hostname.toLowerCase();
