@@ -21,6 +21,7 @@ The format roughly follows Keep a Changelog, and dates are in YYYY-MM-DD.
 * Android hardware back button closes the lightbox, menus, and modals before exiting the app.
 * The Electron window remembers its size, position, and maximized state.
 * `npm run webapp:build` regenerates `server/webapp/` from `renderer/`; CI runs it, and the Nixpacks deploy uses the same script instead of an inline copy command.
+* StreamBooru has its own icon at last, replacing the stock Capacitor placeholder that shipped as the Android launcher icon and splash. The mark is four gallery tiles around a play cut-out; vector masters live in `branding/`, and the generated assets cover the desktop build (`build/icon.png`), every Android launcher density including the adaptive foreground and round variants, all eleven splash sizes, and the web favicon.
 
 ### Changed
 * `server/webapp/` is a generated artifact of `renderer/`; the stale hand-maintained local copy (including the orphaned `bulk-download.js`) is replaced by the build script, which also prunes removed files.
@@ -29,6 +30,7 @@ The format roughly follows Keep a Changelog, and dates are in YYYY-MM-DD.
 * Body scrolling locks behind the lightbox, modals, and menu, and infinite scroll pauses while an overlay is open.
 * Modals and the lightbox trap focus, restore it on close, and tabs expose `role="tab"`/`aria-selected`.
 * Remote site sync no longer clobbers local-only config (settings, filename template), and `/api/sites` now stores and returns each site's enabled state.
+* Recoloured the interface to match the new icon: a cyan-and-magenta accent pair replaces the periwinkle blue, applied through theme tokens (`--accent`, `--accent-2`, `--accent-grad`, `--ring`) rather than the hardcoded literals that were scattered through the stylesheet, so the wordmark, active tab, Download All button, and download progress all carry the brand gradient. The light theme uses a deeper teal and magenta to stay legible on white, and the modal surfaces lose their navy tint.
 * Dependencies updated to current releases (Electron 43.4, Capacitor CLI 8.5, and server-side Express 4.22, pg 8.23, jsonwebtoken 9.0.3, dotenv 16.6), with `uuid` and `body-parser` pinned through overrides to clear the remaining advisories; `npm audit` and `bun audit` are clean.
 
 ### Security

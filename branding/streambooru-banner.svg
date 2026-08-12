@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320">
+  <defs>
+    <linearGradient id="mark-grad" gradientUnits="userSpaceOnUse" x1="202" y1="202" x2="822" y2="822">
+      <stop offset="0" stop-color="#22e3ff"/>
+      <stop offset="1" stop-color="#ff2fb0"/>
+    </linearGradient>
+    <linearGradient id="word-grad" gradientUnits="userSpaceOnUse" x1="330" y1="120" x2="830" y2="190">
+      <stop offset="0" stop-color="#22e3ff"/>
+      <stop offset="1" stop-color="#ff2fb0"/>
+    </linearGradient>
+    <mask id="banner-cut">
+      <rect x="0" y="0" width="1024" height="1024" fill="#fff"/>
+      <path d="M 416 356 L 686 512 L 416 668 Z"
+            fill="#000" stroke="#000" stroke-width="58" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="320" fill="#0a0d14"/>
+
+  <g transform="translate(110 80) scale(0.15625)">
+    <g mask="url(#banner-cut)" fill="url(#mark-grad)">
+      <rect x="202" y="202" width="297" height="297" rx="54" ry="54"/>
+      <rect x="525" y="202" width="297" height="297" rx="54" ry="54"/>
+      <rect x="202" y="525" width="297" height="297" rx="54" ry="54"/>
+      <rect x="525" y="525" width="297" height="297" rx="54" ry="54"/>
+    </g>
+  </g>
+
+  <text x="330" y="172" font-family="DejaVu Sans, Segoe UI, Helvetica, sans-serif"
+        font-size="66" font-weight="bold" fill="url(#word-grad)">StreamBooru</text>
+  <text x="334" y="216" font-family="DejaVu Sans, Segoe UI, Helvetica, sans-serif"
+        font-size="24" fill="#979da9">Browse every booru you use from one feed</text>
+</svg>

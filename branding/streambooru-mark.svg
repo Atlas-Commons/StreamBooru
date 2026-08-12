@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Mark only, no plate. Scaled to 46% of the canvas so the tile corners stay
+       inside the circle a launcher can mask the 108dp foreground down to. -->
+  <defs>
+    <linearGradient id="sb-grad" gradientUnits="userSpaceOnUse" x1="202" y1="202" x2="822" y2="822">
+      <stop offset="0" stop-color="#22e3ff"/>
+      <stop offset="1" stop-color="#ff2fb0"/>
+    </linearGradient>
+    <mask id="sb-cut">
+      <rect x="0" y="0" width="1024" height="1024" fill="#fff"/>
+      <path d="M 416 356 L 686 512 L 416 668 Z"
+            fill="#000" stroke="#000" stroke-width="58" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+
+  <g transform="translate(512 512) scale(0.760) translate(-512 -512)">
+    <g mask="url(#sb-cut)" fill="url(#sb-grad)">
+      <rect x="202" y="202" width="297" height="297" rx="54" ry="54"/>
+      <rect x="525" y="202" width="297" height="297" rx="54" ry="54"/>
+      <rect x="202" y="525" width="297" height="297" rx="54" ry="54"/>
+      <rect x="525" y="525" width="297" height="297" rx="54" ry="54"/>
+    </g>
+  </g>
+</svg>
