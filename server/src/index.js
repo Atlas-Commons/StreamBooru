@@ -49,8 +49,18 @@ app.use((req, res, next) => {
   req.on('error', () => next());
 });
 
-/* Never log query strings: proxied upstream URLs may contain API credentials. */
-app.use((req, _res, next) => { try { console.log(`${req.method} ${req.path}`); } catch {} next(); });
+/* Never log query strings: proxied upstream URLs may contain API credentials. A busy
+   feed proxies a thumbnail per card, so logging every request buries anything useful —
+   report what failed, and set LOG_REQUESTS=1 when you want the lot. */
+const LOG_ALL_REQUESTS = process.env.LOG_REQUESTS === '1';
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  res.once('finish', () => {
+    if (!LOG_ALL_REQUESTS && res.statusCode < 400) return;
+    try { console.log(`${req.method} ${req.path} ${res.statusCode} ${Date.now() - startedAt}ms`); } catch {}
+  });
+  next();
+});
 
 /* ---------- config ---------- */
 const PORT = Number(process.env.PORT || 3000);
@@ -765,6 +775,14 @@ if (fs.existsSync(publicDir)) {
     const page = path.join(publicDir, 'oauth-callback.html');
     if (fs.existsSync(page)) return res.sendFile(page);
     res.status(404).send('OAuth callback page missing');
+  });
+  // Cloudflare is set to build error responses from this path, so it fetches it here for
+  // every 4xx and 5xx. With no route it 404s and visitors get Express's "Cannot GET
+  // /custom_error" as the body of the error. It has to answer 200 to be used as a page.
+  app.get('/custom_error', (_req, res) => {
+    const page = path.join(publicDir, 'custom_error.html');
+    if (fs.existsSync(page)) return res.sendFile(page);
+    res.type('text/plain').send('StreamBooru could not complete that request.');
   });
 }
 
