@@ -14,6 +14,9 @@ server/webapp
 electron
 build
 docs
-scripts
+# contents, not the directory itself, so the exception below is always evaluated
+scripts/*
+# the Nixpacks build phase runs this one to generate server/webapp from renderer
+!scripts/build-webapp.mjs
 *.md
 !server/README.md
