@@ -1,6 +1,6 @@
 /* Mobile-only overrides */
 
-:root { --topbar-h: calc(56px + env(safe-area-inset-top, 0px)); --acc: #4c8dff; }
+:root { --topbar-h: calc(56px + env(safe-area-inset-top, 0px)); }
 
 html, body {
   max-width: 100%;
@@ -97,7 +97,7 @@ html, body {
   background: #111318; color: #fff;
 }
 .menu-search input::placeholder { color: rgba(255,255,255,0.5); }
-.menu-search input:focus { outline: none; border-color: var(--acc); box-shadow: 0 0 0 2px color-mix(in srgb, var(--acc) 32%, transparent); }
+.menu-search input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft-strong); }
 .menu-search button {
   flex: 0 0 auto; height: 44px; padding: 0 14px;
   border-radius: 5px; border: 1px solid var(--border);
