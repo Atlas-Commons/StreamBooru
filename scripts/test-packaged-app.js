@@ -29,6 +29,20 @@ function run(command, args, options = {}) {
   });
 }
 
+// Only the .deb/rpm installers give chrome-sandbox its root-owned setuid bit, so an unpacked
+// build relies on user namespaces. Hosts that restrict those fall back to the SUID helper and
+// abort, so drop the sandbox whenever the helper cannot work.
+function sandboxUnusable(appDir) {
+  if (process.platform !== 'linux') return false;
+  if (typeof process.getuid === 'function' && process.getuid() === 0) return true;
+  try {
+    const helper = fs.statSync(path.join(appDir, 'chrome-sandbox'));
+    return helper.uid !== 0 || (helper.mode & 0o4000) === 0;
+  } catch {
+    return false;
+  }
+}
+
 async function main() {
   const builder = path.join(root, 'node_modules', 'electron-builder', 'out', 'cli', 'cli.js');
   const built = await run(process.execPath, [builder, '--dir', '--publish=never', '--config', 'electron-builder.yml'], {
@@ -46,7 +60,7 @@ async function main() {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'streambooru-smoke-'));
   const env = { ...process.env, SB_SMOKE_TEST: '1', SB_SMOKE_USER_DATA: userData };
   delete env.ELECTRON_RUN_AS_NODE;
-  const args = process.platform === 'linux' && typeof process.getuid === 'function' && process.getuid() === 0 ? ['--no-sandbox'] : [];
+  const args = sandboxUnusable(path.dirname(executable)) ? ['--no-sandbox'] : [];
 
   const launched = await run(executable, args, { env, timeoutMs: 30_000 });
   if (launched.code !== 0) throw new Error(`Packaged app exited with ${launched.code ?? launched.signal}`);
