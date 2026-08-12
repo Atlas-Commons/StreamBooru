@@ -719,6 +719,10 @@
     if (!base || !acc.token) return { ok: false, error: 'Not logged in' };
     const data = await httpGetJSON(`${base}/api/favourites`, { Authorization: `Bearer ${acc.token}` });
     const remote = Array.isArray(data?.items) ? data.items : [];
+    const deletedAt = new Map();
+    for (const d of Array.isArray(data?.deletions) ? data.deletions : []) {
+      if (d?.key) deletedAt.set(String(d.key), Number(d.deleted_at) || 0);
+    }
     const keys = new Set();
     const map = new Map();
     for (const it of remote) {
@@ -733,12 +737,14 @@
       if (keys.has(k)) continue;
       const raw = localMap.get(k);
       if (!raw) continue;
+      let post = null;
+      try { post = JSON.parse(raw); } catch {}
+      const addedAt = Number(post?._added_at) || 0;
+      // another device unfaved it after this one saved it, so let the removal win
+      if (post && (deletedAt.get(k) ?? -1) >= addedAt) continue;
       keys.add(k);
       map.set(k, raw);
-      try {
-        const post = JSON.parse(raw);
-        extras.push({ key: k, added_at: Number(post?._added_at) || Date.now(), post });
-      } catch {}
+      if (post) extras.push({ key: k, added_at: addedAt || Date.now(), post });
     }
     favSaveKeys(keys);
     favSaveMap(map);
@@ -809,6 +815,7 @@
 
   // SSE with debounce to avoid storms
   let sse = { es: null, base: '', token: '' };
+  let sseConnecting = false;
   let favSyncTimer = null;
   let favSyncInFlight = false;
   let favSyncNeedsRerun = false;
@@ -832,14 +839,26 @@
     }, 250);
   }
 
-  function openSse() {
+  async function openSse() {
     try {
       const acc = accLoad(); const base = accGetBase(acc); const token = acc?.token || '';
       if (!base || !token) return closeSse();
       if (sse.es && sse.base === base && sse.token === token) return;
+      if (sseConnecting) { setTimeout(() => openSse(), 1000); return; }
+      sseConnecting = true;
+
+      // EventSource cannot set an Authorization header, so trade the account token for a
+      // short-lived stream ticket rather than leaving it in the URL. Servers older than
+      // 1.2.0 have no ticket endpoint.
+      let credential = '';
+      try {
+        const t = await httpPostJSON(`${base}/api/stream/ticket`, {}, { Authorization: `Bearer ${token}` });
+        if (t?.ticket) credential = `ticket=${encodeURIComponent(t.ticket)}`;
+      } catch {}
+      if (!credential) credential = `access_token=${encodeURIComponent(token)}`;
 
       closeSse();
-      const url = `${base}/api/stream?access_token=${encodeURIComponent(token)}&t=${Date.now()}`;
+      const url = `${base}/api/stream?${credential}&t=${Date.now()}`;
       const es = new EventSource(url, { withCredentials: false });
       sse = { es, base, token };
 
@@ -870,7 +889,7 @@
         await pullSitesFromServerAndSave();
       });
       es.onerror = () => { setTimeout(() => { if (sse.es === es) openSse(); }, 3000); };
-    } catch {}
+    } catch {} finally { sseConnecting = false; }
   }
   function closeSse() {
     try { sse.es?.close?.(); } catch {}

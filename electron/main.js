@@ -253,10 +253,24 @@ function configWithSyncedSites(remoteSites) {
 }
 
 /* favorites */
-function favKey(post) { return `${post?.site?.baseUrl || ''}#${post?.id}`; }
+function favKey(post) { return `${normalizeBaseUrl(post?.site?.baseUrl || '')}#${post?.id}`; }
 function loadFavorites() {
   if (!fs.existsSync(FAVORITES_PATH)) return [];
-  try { const arr = JSON.parse(fs.readFileSync(FAVORITES_PATH, 'utf-8')); return Array.isArray(arr) ? arr : []; } catch { return []; }
+  try {
+    const arr = JSON.parse(fs.readFileSync(FAVORITES_PATH, 'utf-8'));
+    if (!Array.isArray(arr)) return [];
+    // Older builds keyed off the raw baseUrl, so re-key through favKey to stay in step with
+    // the renderer and collapse the duplicates a trailing slash or host casing produced.
+    const byKey = new Map();
+    for (const it of arr) {
+      if (!it) continue;
+      const key = it.post ? favKey(it.post) : String(it.key || '');
+      if (!key) continue;
+      const prev = byKey.get(key);
+      if (!prev || (Number(it.added_at) || 0) < (Number(prev.added_at) || 0)) byKey.set(key, { ...it, key });
+    }
+    return [...byKey.values()];
+  } catch { return []; }
 }
 function saveFavorites(arr) {
   fs.writeFileSync(FAVORITES_PATH, JSON.stringify(arr, null, 2), 'utf-8');
@@ -373,14 +387,22 @@ async function pullFavoritesMerge() {
   const url = `${acc.serverBase.replace(/\/+$/,'')}/api/favourites`;
   const j = await httpGetJson(url, { Authorization: `Bearer ${acc.token}` });
   const remote = Array.isArray(j?.items) ? j.items : [];
+  const deletedAt = new Map();
+  for (const d of Array.isArray(j?.deletions) ? j.deletions : []) {
+    if (d?.key) deletedAt.set(String(d.key), Number(d.deleted_at) || 0);
+  }
 
   const merged = new Map();
   for (const it of remote) {
     if (!it || !it.key || !it.post) continue;
-    merged.set(String(it.key), { key: String(it.key), added_at: Number(it.added_at) || Date.now(), post: it.post });
+    // re-key rows an older build wrote with a raw baseUrl so they line up with local keys
+    const key = it.post?.site?.baseUrl ? favKey(it.post) : String(it.key);
+    merged.set(key, { key, added_at: Number(it.added_at) || Date.now(), post: it.post });
   }
-  // keep faves saved while offline/logged out and push them back up
-  const localOnly = loadFavorites().filter((it) => it?.key && it?.post && !merged.has(it.key));
+  // keep faves saved while offline/logged out and push them back up, unless another device
+  // unfaved them after this one saved them
+  const localOnly = loadFavorites().filter((it) => it?.key && it?.post && !merged.has(it.key)
+    && (deletedAt.get(it.key) ?? -1) < (Number(it.added_at) || 0));
   for (const it of localOnly) merged.set(it.key, it);
   const next = [...merged.values()];
   saveFavorites(next);

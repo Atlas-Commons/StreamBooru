@@ -35,6 +35,8 @@ The format roughly follows Keep a Changelog, and dates are in YYYY-MM-DD.
 
 ### Security
 * The server refuses to start with a weak or placeholder `JWT_SECRET` (forgeable tokens) unless `ALLOW_INSECURE_JWT_SECRET=1` is set for local development; JWT verification is pinned to HS256.
+* **Breaking (deployments):** `ENC_SECRET` is held to the same standard and is now checked at startup instead of on the first credential write, with `ALLOW_INSECURE_ENC_SECRET=1` as the local-dev escape hatch. A deployment running without one, or with the placeholder from `.env.example`, will refuse to boot until it is set.
+* Browsers connect to the event stream with a 60-second, stream-only ticket from `POST /api/stream/ticket` instead of putting the 90-day account token in a URL that proxy and CDN logs retain. Tickets are rejected everywhere else in the API, the stream endpoint rejects account tokens presented as tickets, and it now pins HS256 like the rest of the API. Older clients passing `access_token` still work.
 * Postgres TLS verifies the server certificate by default (`PGSSL_REJECT_UNAUTHORIZED`, opt out only for self-signed managed databases).
 * The Electron window blocks in-app navigation to remote origins and routes external links to the OS browser, keeping the privileged preload bridge off untrusted pages.
 * Discord OAuth callbacks now require a client-generated nonce — on the desktop loopback listener (which also rejects requests carrying an `Origin` header) and the Android `streambooru://` deep link — blocking login-CSRF/token injection.
@@ -42,6 +44,9 @@ The format roughly follows Keep a Changelog, and dates are in YYYY-MM-DD.
 
 ### Fixed
 * Logging back in no longer overwrites favourites saved while offline: sync now merges the server copy with local faves and uploads the local-only ones, on Electron, web, and Android. Live removals from other devices still apply through targeted sync events.
+* Unfaving no longer comes back. Merge sync treated every local-only favourite as something to re-upload, so a device that was offline when another one unfaved a post pushed it straight back. Removals are now recorded server-side for 180 days and the newer timestamp wins, so a genuine re-fave still beats an older deletion. The server enforces this on bulk upload rather than trusting clients.
+* Favourites synced through the server keep their `artist`, `copyright` and `character` tags and their video fields — the server's post allowlist predated all five and silently dropped them, degrading the grouped tag panel and losing grid autoplay on any favourite that had made a round trip.
+* Electron keyed favourites off the raw site URL while the renderer normalized it, so a trailing slash or different host casing in an older config produced two keys for one post. Keys are normalized in one place now, and existing favourites are re-keyed and de-duplicated on load.
 * Restored the desktop Gelbooru XML fallback (the adapter was handed a JSON parser instead of a text fetcher), the desktop "Unlink Discord" action, and the correct app version in Settings (all were silently no-ops).
 * Linux: Chromium's disk/GPU/code caches and web storage no longer pollute `~/.config/streambooru`. `sessionData` is redirected to `~/.cache` (honouring `XDG_CACHE_HOME`) while durable config stays in `~/.config`, and stale cache directories left by older builds are pruned once on launch.
 * The card and lightbox "Save" buttons are now "Fave" (they never wrote files to disk; Download does that), with clearer tooltips.

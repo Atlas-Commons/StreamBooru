@@ -63,19 +63,20 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 const MAX_MEDIA_BYTES = Math.max(1, Number(process.env.MAX_MEDIA_BYTES || 512 * 1024 * 1024));
 const MAX_API_PROXY_BYTES = Math.max(1, Number(process.env.MAX_API_PROXY_BYTES || 10 * 1024 * 1024));
 
-const WEAK_JWT_SECRETS = new Set(['dev_secret', 'change_me_to_a_long_random_string', 'secret', 'changeme']);
-const jwtSecretIsWeak = !process.env.JWT_SECRET || WEAK_JWT_SECRETS.has(JWT_SECRET) || /change_me/i.test(JWT_SECRET) || JWT_SECRET.length < 16;
-const allowInsecureSecret = process.env.ALLOW_INSECURE_JWT_SECRET === '1'
-  || process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test' || process.env.SB_DEV === '1';
-if (jwtSecretIsWeak) {
-  if (!allowInsecureSecret) {
-    throw new Error('JWT_SECRET must be a strong random value (>= 16 chars, not a placeholder). Set ALLOW_INSECURE_JWT_SECRET=1 for local development only.');
+const WEAK_SECRETS = new Set(['dev_secret', 'change_me_to_a_long_random_string', 'secret', 'changeme']);
+const secretIsWeak = (value) => !value || WEAK_SECRETS.has(value) || /change_me/i.test(value) || value.length < 16;
+const isLocalDev = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test' || process.env.SB_DEV === '1';
+function guardSecret(name, value, consequence) {
+  if (!secretIsWeak(value)) return;
+  if (process.env[`ALLOW_INSECURE_${name}`] !== '1' && !isLocalDev) {
+    throw new Error(`${name} must be a strong random value (>= 16 chars, not a placeholder). Set ALLOW_INSECURE_${name}=1 for local development only.`);
   }
-  console.warn('[security] JWT_SECRET is weak or a placeholder — issued tokens are forgeable. Do not use this in production.');
+  console.warn(`[security] ${name} is weak or a placeholder — ${consequence}. Do not use this in production.`);
 }
-if (/change_me/i.test(process.env.ENC_SECRET || '') || !(process.env.ENC_SECRET || '').length) {
-  console.warn('[security] ENC_SECRET is unset or a placeholder — stored site credentials are weakly encrypted.');
-}
+guardSecret('JWT_SECRET', JWT_SECRET, 'issued tokens are forgeable');
+// crypto.getKey() already refuses anything under 16 chars, but a long placeholder is just as
+// public, and failing here beats failing on the first credential write.
+guardSecret('ENC_SECRET', process.env.ENC_SECRET || '', 'stored site credentials are weakly encrypted');
 
 const authRateLimit = createRateLimit({ windowMs: 10 * 60_000, max: 30, label: 'authentication' });
 const apiProxyRateLimit = createRateLimit({ windowMs: 60_000, max: 120, label: 'booru proxy' });
@@ -101,6 +102,8 @@ function auth(req, res, next) {
     const m = /^Bearer\s+(.+)$/.exec(h);
     if (!m) return res.status(401).json({ ok: false, error: 'missing token' });
     const decd = jwt.verify(m[1], JWT_SECRET, { algorithms: ['HS256'] });
+    // stream tickets travel in a URL, so they must not double as full API credentials
+    if (decd.scope) return res.status(401).json({ ok: false, error: 'invalid token' });
     req.user = { id: decd.sub, name: decd.name || '', avatar: decd.avatar || '' };
     next();
   } catch {
@@ -387,6 +390,7 @@ const FAV_KEYS_PATHS = ['/api/favourites/keys', '/api/favorites/keys'];
 const FAV_LIST_PATHS = ['/api/favourites', '/api/favorites'];
 const FAV_KEY_PATHS = ['/api/favourites/:key', '/api/favorites/:key'];
 const FAV_BULK_PATHS = ['/api/favourites/bulk_upsert', '/api/favorites/bulk_upsert'];
+const FAV_TOMBSTONE_MS = 180 * 24 * 60 * 60 * 1000;
 
 app.get(FAV_KEYS_PATHS, auth, async (req, res) => {
   const r = await query('SELECT key FROM favorites WHERE user_id = $1 ORDER BY added_at DESC', [req.user.id]);
@@ -395,7 +399,12 @@ app.get(FAV_KEYS_PATHS, auth, async (req, res) => {
 app.get(FAV_LIST_PATHS, auth, async (req, res) => {
   const r = await query('SELECT key, added_at, post_json FROM favorites WHERE user_id = $1 ORDER BY added_at DESC', [req.user.id]);
   const items = r.rows.map(row => ({ key: row.key, added_at: Number(row.added_at) || 0, post: row.post_json })).filter(x => x.post);
-  res.json({ ok: true, items });
+  // Sync is the only reader of the tombstones, so it is also where they get trimmed. A device
+  // offline for longer than this can still resurrect what it holds.
+  await query('DELETE FROM favorite_deletions WHERE user_id = $1 AND deleted_at < $2', [req.user.id, Date.now() - FAV_TOMBSTONE_MS]);
+  const d = await query('SELECT key, deleted_at FROM favorite_deletions WHERE user_id = $1', [req.user.id]);
+  const deletions = d.rows.map(row => ({ key: row.key, deleted_at: Number(row.deleted_at) || 0 }));
+  res.json({ ok: true, items, deletions });
 });
 app.put(FAV_KEY_PATHS, auth, async (req, res) => {
   try {
@@ -403,6 +412,8 @@ app.put(FAV_KEY_PATHS, auth, async (req, res) => {
     const post = clampPost(bodyObj(req)?.post);
     if (!key || !post) return res.status(400).json({ ok: false, error: 'bad key/post' });
     const added_at = Number(bodyObj(req)?.added_at) || Date.now();
+    // Faving again is deliberate, so it clears any tombstone from an earlier unfave.
+    await query('DELETE FROM favorite_deletions WHERE user_id = $1 AND key = $2', [req.user.id, key]);
     await query(`
       INSERT INTO favorites (user_id, key, added_at, post_json)
       VALUES ($1, $2, $3, $4::jsonb)
@@ -418,8 +429,13 @@ app.delete(FAV_KEY_PATHS, auth, async (req, res) => {
   try {
     const key = sanitizeFavoriteKey(req.params.key);
     if (!key) return res.status(400).json({ ok: false, error: 'bad key' });
+    const deleted_at = Date.now();
     await query('DELETE FROM favorites WHERE user_id = $1 AND key = $2', [req.user.id, key]);
-    emitTo(req.user.id, 'fav_changed', { key, removed: true });
+    await query(`
+      INSERT INTO favorite_deletions (user_id, key, deleted_at) VALUES ($1, $2, $3)
+      ON CONFLICT(user_id, key) DO UPDATE SET deleted_at = EXCLUDED.deleted_at
+    `, [req.user.id, key, deleted_at]);
+    emitTo(req.user.id, 'fav_changed', { key, removed: true, deleted_at });
     res.json({ ok: true });
   } catch {
     res.status(500).json({ ok: false });
@@ -438,16 +454,27 @@ app.post(FAV_BULK_PATHS, auth, async (req, res) => {
       addedAts.push(Number(it?.added_at) || now);
       posts.push(JSON.stringify(post));
     }
+    let upserted = 0;
     if (keys.length) {
-      // one round trip instead of a query per favourite
+      // A fave newer than the tombstone is a real re-fave, so it clears the tombstone. Anything
+      // older is a lagging client pushing back what another device deleted, and is dropped here
+      // rather than trusting the client to have checked.
       await query(`
+        DELETE FROM favorite_deletions d
+        USING unnest($2::text[], $3::bigint[]) AS t(k, a)
+        WHERE d.user_id = $1 AND d.key = t.k AND d.deleted_at < t.a
+      `, [req.user.id, keys, addedAts]);
+      // one round trip instead of a query per favourite
+      const r = await query(`
         INSERT INTO favorites (user_id, key, added_at, post_json)
         SELECT $1, k, a, p::jsonb FROM unnest($2::text[], $3::bigint[], $4::text[]) AS t(k, a, p)
+        WHERE NOT EXISTS (SELECT 1 FROM favorite_deletions d WHERE d.user_id = $1 AND d.key = t.k)
         ON CONFLICT (user_id, key) DO UPDATE SET added_at = EXCLUDED.added_at, post_json = EXCLUDED.post_json
       `, [req.user.id, keys, addedAts, posts]);
+      upserted = r.rowCount || 0;
     }
-    emitTo(req.user.id, 'fav_changed', { bulk: true, count: keys.length, at: Date.now() });
-    res.json({ ok: true, upserted: keys.length });
+    if (upserted) emitTo(req.user.id, 'fav_changed', { bulk: true, count: upserted, at: Date.now() });
+    res.json({ ok: true, upserted, skipped: keys.length - upserted });
   } catch {
     res.status(500).json({ ok: false });
   }
@@ -569,12 +596,21 @@ app.put('/api/sites', auth, async (req, res) => {
 });
 
 /* ---------- SSE ---------- */
+// EventSource cannot send headers, so browsers have to put a credential in the URL where
+// proxy and CDN access logs will keep it. Hand them a minute-long stream-only ticket instead.
+app.post('/api/stream/ticket', auth, (req, res) => {
+  res.json({ ok: true, ticket: jwt.sign({ sub: req.user.id, scope: 'stream' }, JWT_SECRET, { expiresIn: '60s' }) });
+});
 function authFromHeaderOrQuery(req) {
   const h = req.headers.authorization || '';
   const m = /^Bearer\s+(.+)$/.exec(h);
-  const token = m ? m[1] : (String(req.query.access_token || req.query.token || '') || '');
+  const ticket = String(req.query.ticket || '');
+  // older clients still pass a full token in the query string
+  const token = m ? m[1] : (ticket || String(req.query.access_token || req.query.token || ''));
   if (!token) throw new Error('missing token');
-  const decd = jwt.verify(token, JWT_SECRET);
+  const decd = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
+  if (ticket && decd.scope !== 'stream') throw new Error('invalid ticket');
+  if (!ticket && decd.scope) throw new Error('invalid token');
   return { id: decd.sub, name: decd.name || '', avatar: decd.avatar || '' };
 }
 app.get('/api/stream', (req, res) => {
