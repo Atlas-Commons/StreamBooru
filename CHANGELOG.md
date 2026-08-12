@@ -5,6 +5,19 @@ The format roughly follows Keep a Changelog, and dates are in YYYY-MM-DD.
 
 ## [v1.2.0-beta.1] — 2026-08-12
 
+### Highlights
+* **Favourites survive going offline:** signing back in merges your local faves with the server copy instead of overwriting them, and an unfave on one device no longer comes back from a device that was offline when you made it.
+* **Faving reaches the source site:** faving in StreamBooru also faves on Danbooru, Moebooru, and e621 when credentials are configured, and cards show how many StreamBooru users faved a post.
+* **Finding things is easier:** tag autocomplete across every enabled source, a grouped artist/copyright/character tag panel in the lightbox, tag chips on cards, and per-site enable/disable for muting a source without deleting its credentials.
+* **A settings panel:** dark/light theme, grid density, square-crop or natural-aspect cards, video autoplay, safe-mode blur, and the default filename template.
+* **StreamBooru has its own icon,** replacing the stock Capacitor placeholder, and the interface is recoloured to the cyan-and-magenta pair that goes with it.
+* **The hosted web app is generated from the desktop source,** so it stops drifting behind the desktop build the way the old hand-maintained copy did.
+* **Security:** stored API keys are masked in Manage Sites, Discord OAuth callbacks require a nonce, the image proxy refuses private network targets, and the sync server refuses to boot on a weak `JWT_SECRET` or `ENC_SECRET`.
+
+> **Self-hosting the sync server?** `ENC_SECRET` must now be set to a real value or the server will not start — see the deployment notes below.
+
+Closes #3, #8, #9, and #23.
+
 ### Added
 * Tag autocomplete in the search box (desktop and mobile menu), querying all enabled sources per engine (Danbooru, Moebooru, Gelbooru/Rule34, e621, Derpibooru) with keyboard navigation and category colouring.
 * Collapsible tag panel in the lightbox grouped by artist/copyright/character/general with click-to-search, plus tag chips on card hover.
@@ -58,6 +71,15 @@ The format roughly follows Keep a Changelog, and dates are in YYYY-MM-DD.
 * Lightbox Prev/Next track the current post by key, so Popular-feed re-sorts can no longer jump navigation to unrelated posts.
 * `user_favorited` survives post normalization, restoring the remote-favourite button state in the lightbox.
 * Opening Account from the mobile menu no longer opens the modal twice.
+
+### Deployment notes
+Only relevant if you run your own sync server. Desktop, Android, and web users need do nothing.
+
+* `ENC_SECRET` must be set to a real value of at least 16 characters — the placeholder from `.env.example` is rejected — or the server exits at startup instead of failing later on the first credential write. `ALLOW_INSECURE_ENC_SECRET=1` bypasses it for local development. Do not change an existing value: site credentials already encrypted with it become unreadable.
+* `JWT_SECRET` is held to the same standard. Changing it invalidates every issued token, so everyone is signed out.
+* `PGSSL_REJECT_UNAUTHORIZED` now defaults to `true`. Set it to `false` only if your managed Postgres presents a self-signed certificate without a CA bundle.
+* Migrations `0006_site_enabled`, `0007_favorites_key_index`, and `0008_favorite_deletions` apply on startup.
+* Clients from 1.1.x keep working against this server, and this release's clients keep working against a 1.1.x server — favourite deletion tracking, fave counts, and the stream ticket simply stay dormant until both sides are updated.
 
 ## [v1.1.0-beta.2] — 2026-08-11
 
