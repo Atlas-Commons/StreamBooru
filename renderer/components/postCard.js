@@ -89,6 +89,20 @@
     run();
   }
 
+  // A long scroll leaves hundreds of cards mounted, and a preview that starts downloading
+  // as soon as its card is built holds one of the six connections the browser allows per
+  // host. Enough of them and everything below queues behind video nobody is looking at,
+  // which is why thumbnails stop appearing the further you scroll. Only previews near the
+  // viewport get to load.
+  const videoWindow = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const vid = entry.target;
+      if (entry.isIntersecting) { vid._sbEnter?.(); continue; }
+      vid._sbLeave?.();
+      if (!vid.isConnected) videoWindow.unobserve(vid);
+    }
+  }, { rootMargin: '400px 0px' });
+
   function attachVideoThumb(thumbEl, url, onGiveUp) {
     if (!url) {
       onGiveUp?.();
@@ -108,7 +122,8 @@
     vid.setAttribute('aria-label', 'Video preview');
     vid.draggable = false;
 
-    const play = () => { try { vid.play()?.catch(() => {}); } catch {} };
+    let onScreen = false;
+    const play = () => { if (!onScreen) return; try { vid.play()?.catch(() => {}); } catch {} };
     const pause = () => { try { vid.pause(); } catch {} };
 
     const loadBlob = async () => {
@@ -138,8 +153,16 @@
       onGiveUp?.();
     };
 
-    vid.src = url;
+    let requested = false;
+    vid._sbEnter = () => {
+      onScreen = true;
+      if (!requested) { requested = true; vid.src = url; }
+      if (autoplay) play();
+    };
+    vid._sbLeave = () => { onScreen = false; pause(); };
+
     thumbEl.insertBefore(vid, thumbEl.firstChild);
+    videoWindow.observe(vid);
   }
 
   // tap (pointer-first with touch fallback)
