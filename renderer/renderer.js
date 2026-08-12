@@ -1616,6 +1616,7 @@ function setupInfiniteScroll() {
       clearFeed(); scrollToTop(); await fetchBatch();
     }
   });
+  window.events?.onSourceFavSynced?.((summary) => window.reportSourceFavSync?.(summary, { quiet: true }));
 })();
 
 // ---------- source-site favouriting (danbooru/moebooru/e621 with creds) ----------
@@ -1658,6 +1659,23 @@ async function syncFaveToSource(post, favorited) {
     }
   }
 }
+
+// Report a two-way favourites sync. `quiet` keeps the automatic run at startup from
+// interrupting with a toast when it found nothing to do.
+window.reportSourceFavSync = function (summary, { quiet = false } = {}) {
+  if (!summary) return;
+  if (summary.ok === false) return notifyError(`Source favourites: ${summary.error || 'sync failed'}`);
+  const parts = [];
+  if (summary.added) parts.push(`${summary.added} added`);
+  if (summary.removed) parts.push(`${summary.removed} removed`);
+  if (summary.pushed) parts.push(`${summary.pushed} sent up`);
+  if (parts.length) notify(`Source favourites: ${parts.join(', ')}`, { type: 'success' });
+  else if (!quiet) notify(summary.sites ? 'Source favourites already in sync' : 'No source sites have credentials configured');
+  if (summary.truncated?.length) {
+    notify(`${summary.truncated.join(' and ')} has more than ${summary.max} favourites; only the newest were synced`);
+  }
+  for (const err of (summary.errors || []).slice(0, 3)) notifyError(err);
+};
 
 window.hasRemoteFavoriteSupport = (post) => !!sourceFaveSite(post);
 window.toggleRemoteFavorite = async (post) => {

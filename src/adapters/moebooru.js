@@ -6,6 +6,26 @@ class MoebooruAdapter {
     this.httpPostForm = httpPostForm;
   }
 
+  #map(site, p) {
+    const base = site.baseUrl.replace(/\/+$/, '');
+    return normalizePost({
+      id: p.id,
+      created_at: p.created_at || p.created_at_s || p.change,
+      score: p.score,
+      favorites: p.fav_count ?? p.favorite_count ?? 0,
+      preview_url: abs(site.baseUrl, p.preview_url),
+      sample_url: abs(site.baseUrl, p.sample_url || p.jpeg_url || p.file_url),
+      file_url: abs(site.baseUrl, p.file_url || p.sample_url || p.jpeg_url),
+      width: p.width,
+      height: p.height,
+      tags: p.tags ? p.tags.split(' ') : [],
+      rating: p.rating,
+      source: p.source,
+      post_url: `${base}/post/show/${p.id}`,
+      site: { name: site.name, type: site.type, baseUrl: site.baseUrl }
+    });
+  }
+
   async fetchNew(site, { cursor, limit = 40, search = '' }) {
     const page = cursor?.page || 1;
     const base = site.baseUrl.replace(/\/+$/, '');
@@ -31,26 +51,7 @@ class MoebooruAdapter {
       try { posts = await this.httpGetJson(`${base}/post.json?${params2.toString()}`); } catch { posts = []; }
     }
 
-    const normalized = (posts || []).map((p) =>
-      normalizePost({
-        id: p.id,
-        created_at: p.created_at || p.created_at_s || p.change,
-        score: p.score,
-        favorites: p.fav_count ?? p.favorite_count ?? 0,
-        preview_url: abs(site.baseUrl, p.preview_url),
-        sample_url: abs(site.baseUrl, p.sample_url || p.jpeg_url || p.file_url),
-        file_url: abs(site.baseUrl, p.file_url || p.sample_url || p.jpeg_url),
-        width: p.width,
-        height: p.height,
-        tags: p.tags ? p.tags.split(' ') : [],
-        rating: p.rating,
-        source: p.source,
-        post_url: `${base}/post/show/${p.id}`,
-        site: { name: site.name, type: site.type, baseUrl: site.baseUrl }
-      })
-    );
-
-    return { posts: normalized, nextCursor: { page: page + 1 } };
+    return { posts: (posts || []).map((p) => this.#map(site, p)), nextCursor: { page: page + 1 } };
   }
 
   async fetchPopular(site, { cursor, limit = 40, search = '' }) {
@@ -66,26 +67,25 @@ class MoebooruAdapter {
     const url = `${base}/post.json?${params.toString()}`;
     const posts = await this.httpGetJson(url);
 
-    const normalized = (posts || []).map((p) =>
-      normalizePost({
-        id: p.id,
-        created_at: p.created_at || p.created_at_s || p.change,
-        score: p.score,
-        favorites: p.fav_count ?? p.favorite_count ?? 0,
-        preview_url: abs(site.baseUrl, p.preview_url),
-        sample_url: abs(site.baseUrl, p.sample_url || p.jpeg_url || p.file_url),
-        file_url: abs(site.baseUrl, p.file_url || p.sample_url || p.jpeg_url),
-        width: p.width,
-        height: p.height,
-        tags: p.tags ? p.tags.split(' ') : [],
-        rating: p.rating,
-        source: p.source,
-        post_url: `${base}/post/show/${p.id}`,
-        site: { name: site.name, type: site.type, baseUrl: site.baseUrl }
-      })
-    );
+    return { posts: (posts || []).map((p) => this.#map(site, p)), nextCursor: { page: page + 1 } };
+  }
 
-    return { posts: normalized, nextCursor: { page: page + 1 } };
+  // Moebooru records a favourite as a score-3 vote, and offers no ordering by when the
+  // vote was cast, so this comes back newest post first rather than newest fave first.
+  async listFavorites(site, { page = 1, limit = 100 } = {}) {
+    const login = String(site?.credentials?.login || '').trim();
+    if (!login || !site?.credentials?.password_hash) {
+      throw new Error('Moebooru favorites require login + password_hash.');
+    }
+    const base = site.baseUrl.replace(/\/+$/, '');
+    const params = new URLSearchParams();
+    params.set('limit', String(Math.min(limit, 100)));
+    params.set('page', String(page));
+    params.set('tags', `vote:3:${login}`);
+    this.#augmentAuth(site, params);
+
+    const posts = await this.httpGetJson(`${base}/post.json?${params.toString()}`);
+    return { posts: (posts || []).map((p) => this.#map(site, p)), nextCursor: { page: page + 1 } };
   }
 
   async authCheck(site) {

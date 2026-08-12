@@ -48,7 +48,7 @@ class DanbooruAdapter {
     });
   }
 
-  async #fetchPosts(site, { page, limit, tags }) {
+  async #fetchPosts(site, { page, limit, tags, keepHidden = false }) {
     const params = new URLSearchParams();
     params.set('limit', String(Math.min(limit, 200)));
     params.set('page', String(page));
@@ -59,7 +59,7 @@ class DanbooruAdapter {
     const posts = await this.httpGetJson(url);
     return {
       posts: (posts || [])
-        .filter((p) => this.#filterPostVisibility(p))
+        .filter((p) => keepHidden || this.#filterPostVisibility(p))
         .map((p) => this.#mapPost(site, p)),
       nextCursor: { page: page + 1 }
     };
@@ -92,6 +92,20 @@ class DanbooruAdapter {
         count: Number(t.post_count) || 0,
         category: String(t.category ?? '')
       }));
+  }
+
+  // The account's own favourites, most recently faved first. The site's tag and rating
+  // filters are left off on purpose: ordfav: already spends one of the two search tags a
+  // free Danbooru account gets, and a fave the user made is one they want back.
+  //
+  // Nothing is filtered out either. A sync reads absence from this list as an unfave, and a
+  // post the site has since banned is still faved — dropping it here would delete it locally.
+  async listFavorites(site, { page = 1, limit = 200 } = {}) {
+    const login = String(site?.credentials?.login || '').trim();
+    if (!login || !site?.credentials?.api_key) {
+      throw new Error('Danbooru favorites require login + API key.');
+    }
+    return this.#fetchPosts(site, { page, limit, tags: `ordfav:${login}`, keepHidden: true });
   }
 
   async favorite(site, postId, action = 'add') {

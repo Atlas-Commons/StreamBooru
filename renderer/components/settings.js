@@ -109,6 +109,26 @@
     content.appendChild(field('Filename template', templateInput,
       'Tokens: {site} {id} {score} {rating} {width} {height} {artist} {copyright} {character} {created} {original_name}'));
 
+    if (typeof window.api?.syncSourceFavorites === 'function') {
+      const syncBtn = document.createElement('button');
+      syncBtn.type = 'button';
+      syncBtn.textContent = 'Sync now';
+      syncBtn.addEventListener('click', async () => {
+        syncBtn.disabled = true;
+        syncBtn.textContent = 'Syncing…';
+        try {
+          window.reportSourceFavSync?.(await window.api.syncSourceFavorites());
+        } catch (e) {
+          window.toast?.(`Source favourites: ${e?.message || e}`, { type: 'error' });
+        } finally {
+          syncBtn.disabled = false;
+          syncBtn.textContent = 'Sync now';
+        }
+      });
+      content.appendChild(field('Source-site favourites', syncBtn,
+        'Merge favourites both ways with the Danbooru, Moebooru and e621 accounts you have credentials for. Runs on its own shortly after startup.'));
+    }
+
     const versionRow = document.createElement('div');
     versionRow.className = 'hint settings-version';
     versionRow.textContent = 'StreamBooru';

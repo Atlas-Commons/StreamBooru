@@ -105,6 +105,24 @@ class E621Adapter {
     return { posts: normalized, nextCursor: { page: page + 1 } };
   }
 
+  // The account's own favourites, most recently faved first. Site tag and rating filters
+  // are left off deliberately — a fave the user made is one they want back — and deleted
+  // posts are kept, because a sync reads absence from this list as an unfave.
+  async listFavorites(site, { page = 1, limit = 320 } = {}) {
+    const login = String(site?.credentials?.login || '').trim();
+    const apiKey = String(site?.credentials?.api_key || '').trim();
+    if (!login || !apiKey) throw new Error('e621 favourites require login + API key.');
+    const base = (site.baseUrl || '').replace(/\/+$/, '');
+    const params = new URLSearchParams();
+    params.set('limit', String(Math.min(limit, 320)));
+    params.set('page', String(page));
+    params.set('tags', `fav:${login}`);
+    this.#withAuth(params, site);
+    const data = await this.httpGetJson(`${base}/posts.json?${params.toString()}`, { Accept: 'application/json' });
+    const posts = Array.isArray(data?.posts) ? data.posts : Array.isArray(data) ? data : [];
+    return { posts: posts.map((p) => this.#norm(site, p)), nextCursor: { page: page + 1 } };
+  }
+
   async favorite(site, postId, action = 'add') {
     const login = String(site?.credentials?.login || '').trim();
     const apiKey = String(site?.credentials?.api_key || '').trim();

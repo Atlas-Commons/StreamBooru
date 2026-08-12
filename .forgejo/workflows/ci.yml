@@ -44,6 +44,7 @@ jobs:
       - run: npm run test:media
       - run: npm run test:server
       - run: npm run test:tags
+      - run: npm run test:favsources
       - run: xvfb-run -a npm run test:package
 
   dco:

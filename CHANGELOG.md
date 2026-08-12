@@ -5,7 +5,13 @@ The format roughly follows Keep a Changelog, and dates are in YYYY-MM-DD.
 
 ## [v1.2.0-beta.2] — 2026-08-12
 
-Fixes for the problems beta 1 shipped with, plus the deployment fixes that got the sync server running again. No new features.
+Fixes for the problems beta 1 shipped with, plus the deployment fixes that got the sync server running again, and favourites that finally travel in both directions.
+
+### Added
+* Favourites sync both ways with the source sites you hold credentials for. Danbooru, Moebooru and e621 accounts are now read as well as written: a post faved on the site turns up in StreamBooru, a post faved here is sent up to the site, and the whole thing runs shortly after startup or on demand from Settings.
+  * No booru records when a favourite was *dropped*, only which posts are currently faved, so each pull keeps a snapshot of what the site reported and dates a disappearance to the window between pulls. A fave made here since the last pull is the newer fact and goes up to the site; an older one loses to the site's removal.
+  * The first sync has no snapshot to compare against, so it only ever adds, in both directions. A listing that hits the 2000-per-site cap is never read as a removal either, nor is an empty one from an account that had favourites last time — a changed API or a rejected credential looks exactly like unfaving everything, and the cost of guessing wrong is the whole set.
+  * Favourite listings deliberately skip the visibility filtering the feed applies: a post the site has since banned or deleted is still faved, and dropping it from the listing would read as an unfave and delete it locally.
 
 ### Fixed
 * The Favourites feed rebuilt itself on every sync echo, flashing the grid and dragging the reader back to the top. The server broadcasts our own writes back to us, and both clients announced a change even when the merge settled on the set they already held; a save now announces one only when the stored set actually differs, and a merge no longer re-pushes local-only faves the server has declined to keep.

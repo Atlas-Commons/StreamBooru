@@ -52,6 +52,7 @@ const Gelbooru    = loadAdapter('gelbooru');
 const E621        = loadAdapter('e621');
 const Derpibooru  = loadAdapter('derpibooru');
 const { refererHeadersFor, BOORU_UA } = require('../src/shared/refererFor');
+const { reconcileSourceFavorites } = require('../src/favoriteMerge');
 const {
   applyDefaultHeaders,
   downloadUrlToFile,
@@ -209,6 +210,14 @@ app.whenReady().then(async () => {
     }
   } catch {}
 
+  // Behind the first feed load: this walks every credentialled site's favourites and the
+  // user is waiting on posts, not on us.
+  setTimeout(() => {
+    syncSourceFavorites()
+      .then((r) => { if (r && (r.added || r.removed || r.pushed)) win?.webContents?.send?.('sources:favSynced', r); })
+      .catch((e) => console.warn('[source-fave] startup sync failed', String(e?.message || e)));
+  }, 15000);
+
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
@@ -217,6 +226,9 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 const FAVORITES_PATH = path.join(CONFIG_DIR, 'favorites.json');
 const ACCOUNT_PATH = path.join(CONFIG_DIR, 'account.json');
+// what each source site's favourites looked like at the last pull, so the next one can tell
+// a fave dropped on the site from one this device has never sent up
+const SOURCE_FAV_PATH = path.join(CONFIG_DIR, 'source-favorites.json');
 
 /* config */
 function readConfig() {
@@ -432,6 +444,119 @@ async function pullFavoritesMerge() {
 function normalizeBaseUrl(u) {
   try { const url = new URL(String(u || '').trim()); url.hash = ''; url.search = ''; return url.toString().replace(/\/+$/, ''); }
   catch { return String(u || '').replace(/\/+$/, ''); }
+}
+
+/* two-way favourites with the source sites */
+const SOURCE_FAV_MAX = 2000;      // per site per run
+const SOURCE_FAV_MAX_PUSH = 100;  // faves sent up per site per run, so a first run cannot flood
+const SOURCE_FAV_CREDENTIALS = {
+  danbooru: (c) => !!(c.login && c.api_key),
+  e621: (c) => !!(c.login && c.api_key),
+  moebooru: (c) => !!(c.login && c.password_hash)
+};
+
+function readSourceFavState() {
+  try { return JSON.parse(fs.readFileSync(SOURCE_FAV_PATH, 'utf-8')) || {}; } catch { return {}; }
+}
+function writeSourceFavState(state) {
+  try { fs.writeFileSync(SOURCE_FAV_PATH, JSON.stringify(state, null, 2), 'utf-8'); } catch {}
+}
+function sourceFavSites() {
+  return (readConfig().sites || []).filter((s) => {
+    const check = SOURCE_FAV_CREDENTIALS[s?.type];
+    return !!check && s?.enabled !== false && check(s.credentials || {});
+  });
+}
+
+async function listSourceFavorites(site) {
+  const adapter = adapters[site.type];
+  if (typeof adapter?.listFavorites !== 'function') throw new Error('Favourites not supported for this site');
+  const perPage = site.type === 'e621' ? 320 : site.type === 'danbooru' ? 200 : 100;
+  const byKey = new Map();
+  let page = 1;
+  let truncated = false;
+  for (;;) {
+    const res = await adapter.listFavorites(site, { page, limit: perPage });
+    const batch = Array.isArray(res?.posts) ? res.posts : [];
+    if (batch.length === 0) break;
+    const before = byKey.size;
+    for (const p of batch) byKey.set(favKey(p), p);
+    // a site that ignores the page parameter would otherwise page forever
+    if (byKey.size === before) break;
+    if (byKey.size >= SOURCE_FAV_MAX) { truncated = true; break; }
+    if (batch.length < perPage) break;
+    page++;
+  }
+  return { byKey, truncated };
+}
+
+/* Pull each configured site's favourites and reconcile them with ours.
+   A site reports which posts are faved, never when one stopped being faved, so a key that
+   was present at the previous pull and is gone now was dropped somewhere in between. That
+   window is the best timestamp available: a fave made here after the last pull is the newer
+   fact and goes up to the site, an older one loses to the site's removal. */
+async function syncSourceFavorites() {
+  const sites = sourceFavSites();
+  const summary = { ok: true, sites: sites.length, max: SOURCE_FAV_MAX, added: 0, removed: 0, pushed: 0, truncated: [], errors: [] };
+  if (sites.length === 0) return summary;
+
+  const state = readSourceFavState();
+  const now = Date.now();
+
+  for (const site of sites) {
+    const label = site.name || site.type;
+    const siteBase = normalizeBaseUrl(site.baseUrl);
+    const stateKey = `${site.type}|${siteBase}`;
+    const prev = state[stateKey] || null;
+    const prevKeys = new Set(Array.isArray(prev?.keys) ? prev.keys : []);
+    const pulledAt = Number(prev?.pulled_at) || 0;
+
+    let listing;
+    try { listing = await listSourceFavorites(site); }
+    catch (e) { summary.errors.push(`${label}: ${String(e?.message || e)}`); continue; }
+    if (listing.truncated) summary.truncated.push(label);
+
+    const localByKey = new Map(loadFavorites().map((it) => [it.key, it]));
+    const { toAdd, toRemove, toPush } = reconcileSourceFavorites({
+      remote: listing.byKey,
+      local: [...localByKey.values()],
+      previousKeys: prevKeys,
+      pulledAt,
+      siteBase,
+      truncated: listing.truncated,
+      now
+    });
+
+    for (const entry of toAdd) {
+      localByKey.set(entry.key, entry);
+      summary.added++;
+      setImmediate(() => pushFavoriteRemote(entry.key, entry.post, entry.added_at).catch(() => {}));
+    }
+    for (const key of toRemove) {
+      localByKey.delete(key);
+      summary.removed++;
+      setImmediate(() => deleteFavoriteRemote(key).catch(() => {}));
+    }
+
+    saveFavorites([...localByKey.values()]);
+
+    // Sent one at a time: these are writes against someone else's rate limit.
+    for (const it of toPush.slice(0, SOURCE_FAV_MAX_PUSH)) {
+      try {
+        await adapters[site.type].favorite(site, it.post.id, 'add');
+        listing.byKey.set(it.key, it.post);
+        summary.pushed++;
+      } catch (e) {
+        summary.errors.push(`${label}: could not fave ${it.post.id} (${String(e?.message || e)})`);
+        break;
+      }
+    }
+
+    state[stateKey] = { pulled_at: now, keys: [...listing.byKey.keys()] };
+  }
+
+  writeSourceFavState(state);
+  return summary;
 }
 
 async function sitesRemoteGet() {
@@ -909,5 +1034,9 @@ ipcMain.handle('app:getVersion', () => app.getVersion());
 /* IPC: sync helpers */
 ipcMain.handle('sync:onLogin', async () => { await onLoginUnion(); return { ok: true }; });
 ipcMain.handle('sync:fav:pull', async () => pullFavoritesMerge());
+ipcMain.handle('sync:fav:sources', async () => {
+  try { return await syncSourceFavorites(); }
+  catch (e) { return { ok: false, error: String(e?.message || e) }; }
+});
 ipcMain.handle('sites:getRemote', async () => ({ ok: true, sites: await sitesRemoteGet() }));
 ipcMain.handle('sites:saveRemote', async (_evt, sites) => sitesRemotePut(sites));

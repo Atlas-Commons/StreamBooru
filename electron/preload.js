@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('api', {
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
   syncOnLogin: () => ipcRenderer.invoke('sync:onLogin'),
   syncPullFavorites: () => ipcRenderer.invoke('sync:fav:pull'),
+  syncSourceFavorites: () => ipcRenderer.invoke('sync:fav:sources'),
   sitesGetRemote: () => ipcRenderer.invoke('sites:getRemote'),
   sitesSaveRemote: (sites) => ipcRenderer.invoke('sites:saveRemote', sites),
 });
@@ -61,6 +62,12 @@ contextBridge.exposeInMainWorld('events', {
     const listener = () => handler();
     ipcRenderer.on('favorites:changed', listener);
     return () => ipcRenderer.removeListener('favorites:changed', listener);
+  },
+  onSourceFavSynced: (handler) => {
+    if (typeof handler !== 'function') return () => {};
+    const listener = (_evt, summary) => handler(summary);
+    ipcRenderer.on('sources:favSynced', listener);
+    return () => ipcRenderer.removeListener('sources:favSynced', listener);
   },
   onAccountChanged: (handler) => {
     if (typeof handler !== 'function') return () => {};

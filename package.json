@@ -27,6 +27,7 @@
     "webapp:build": "node scripts/build-webapp.mjs",
     "webapp:check": "node scripts/build-webapp.mjs --check",
     "test:tags": "node scripts/test-query-tags.js",
+    "test:favsources": "node scripts/test-source-favorites.js",
     "test:media": "node scripts/test-media.js",
     "test:server": "node scripts/test-server-local.js",
     "test:server:deployed": "node scripts/test-server-smoke.js",
