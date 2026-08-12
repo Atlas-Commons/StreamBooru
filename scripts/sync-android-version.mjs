@@ -26,7 +26,6 @@ function resolveVersion() {
   return readPackageVersion();
 }
 
-/** @param {string} version */
 export function parseAndroidVersion(version) {
   const raw = String(version || '').trim();
   const m = raw.match(/^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?(?:[-+].*)?$/i);

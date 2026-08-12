@@ -3,6 +3,53 @@
 All notable changes to this project will be documented in this file.
 The format roughly follows Keep a Changelog, and dates are in YYYY-MM-DD.
 
+## [v1.2.0-beta.1] — 2026-08-12
+
+### Added
+* Tag autocomplete in the search box (desktop and mobile menu), querying all enabled sources per engine (Danbooru, Moebooru, Gelbooru/Rule34, e621, Derpibooru) with keyboard navigation and category colouring.
+* Collapsible tag panel in the lightbox grouped by artist/copyright/character/general with click-to-search, plus tag chips on card hover.
+* Per-site enable/disable toggle in Manage Sites and a source-chip row above the feed for muting a source without deleting its credentials; the flag syncs across devices via Account Sync (server migration `0006_site_enabled`, with a local fallback against older servers).
+* Settings panel: dark/light theme, grid density, square-crop vs natural-aspect card layout, video-thumbnail autoplay, safe-mode blur for non-safe thumbnails, and the default filename template.
+* Bulk downloads report live progress with a cancel button on Electron, web, and Android.
+* Toast notifications replace every blocking `alert()` dialog.
+* First-run, no-results, and empty-favourites states with actionable buttons, plus skeleton cards while feeds load.
+* Adapters now surface artist/copyright/character tag categories (Danbooru, e621, Derpibooru), powering the `{artist}` `{copyright}` `{character}` filename tokens and the tag panel.
+* Cards show how many StreamBooru users faved each post (public `/api/favourites/counts` endpoint, batch-fetched, with a supporting index in migration `0007_favorites_key_index`).
+* Faving a post also favourites it on the source site when API credentials are configured (Danbooru, Moebooru, e621 — including a new e621 favourites endpoint in the adapter), and the lightbox's "Fave on site" button now works for those sites.
+* Derpibooru sites accept an optional API key (applies your account's content filters) and Filter ID in Manage Sites; the key is sent with every request.
+* Lightbox prefetches neighbouring images, and supports pinch zoom, double-tap zoom, swipe left/right to navigate, and swipe down to close on touch screens.
+* Android hardware back button closes the lightbox, menus, and modals before exiting the app.
+* The Electron window remembers its size, position, and maximized state.
+* `npm run webapp:build` regenerates `server/webapp/` from `renderer/`; CI runs it, and the Nixpacks deploy uses the same script instead of an inline copy command.
+
+### Changed
+* `server/webapp/` is a generated artifact of `renderer/`; the stale hand-maintained local copy (including the orphaned `bulk-download.js`) is replaced by the build script, which also prunes removed files.
+* Popular-feed re-sorts reuse existing cards through keyed DOM reconciliation instead of rebuilding the grid, so images no longer re-decode and playing video thumbnails survive; far-offscreen cards skip rendering work.
+* Folder-picker and save dialogs are async so they no longer freeze feed loading, autocomplete, and sync while open; the scroll handler is coalesced to one layout read per frame; the natural-aspect grid batches its layout reads and writes; favourite bulk-sync inserts in one round trip; and web/Android thumbnails on hotlink hosts skip a guaranteed-to-fail direct request.
+* Body scrolling locks behind the lightbox, modals, and menu, and infinite scroll pauses while an overlay is open.
+* Modals and the lightbox trap focus, restore it on close, and tabs expose `role="tab"`/`aria-selected`.
+* Remote site sync no longer clobbers local-only config (settings, filename template), and `/api/sites` now stores and returns each site's enabled state.
+* Dependencies updated to current releases (Electron 43.4, Capacitor CLI 8.5, and server-side Express 4.22, pg 8.23, jsonwebtoken 9.0.3, dotenv 16.6), with `uuid` and `body-parser` pinned through overrides to clear the remaining advisories; `npm audit` and `bun audit` are clean.
+
+### Security
+* The server refuses to start with a weak or placeholder `JWT_SECRET` (forgeable tokens) unless `ALLOW_INSECURE_JWT_SECRET=1` is set for local development; JWT verification is pinned to HS256.
+* Postgres TLS verifies the server certificate by default (`PGSSL_REJECT_UNAUTHORIZED`, opt out only for self-signed managed databases).
+* The Electron window blocks in-app navigation to remote origins and routes external links to the OS browser, keeping the privileged preload bridge off untrusted pages.
+* Discord OAuth callbacks now require a client-generated nonce — on the desktop loopback listener (which also rejects requests carrying an `Origin` header) and the Android `streambooru://` deep link — blocking login-CSRF/token injection.
+* The image proxy refuses loopback, private, and link-local targets (SSRF hardening); bulk/single downloads reject `..` path segments; the login route no longer accepts passwords via query string; DB error logs no longer include query parameters.
+
+### Fixed
+* Logging back in no longer overwrites favourites saved while offline: sync now merges the server copy with local faves and uploads the local-only ones, on Electron, web, and Android. Live removals from other devices still apply through targeted sync events.
+* Restored the desktop Gelbooru XML fallback (the adapter was handed a JSON parser instead of a text fetcher), the desktop "Unlink Discord" action, and the correct app version in Settings (all were silently no-ops).
+* Linux: Chromium's disk/GPU/code caches and web storage no longer pollute `~/.config/streambooru`. `sessionData` is redirected to `~/.cache` (honouring `XDG_CACHE_HOME`) while durable config stays in `~/.config`, and stale cache directories left by older builds are pruned once on launch.
+* The card and lightbox "Save" buttons are now "Fave" (they never wrote files to disk; Download does that), with clearer tooltips.
+* Derpibooru's Manage Sites card claimed authentication was optional but offered no way to enter it.
+* The "Name format" download options popover is now reachable (right-click or Shift-click Download All) and actually applies and persists the chosen template, including custom formats.
+* Keyboard zoom (`+`/`-`) in the lightbox no longer throws a `ReferenceError`.
+* Lightbox Prev/Next track the current post by key, so Popular-feed re-sorts can no longer jump navigation to unrelated posts.
+* `user_favorited` survives post normalization, restoring the remote-favourite button state in the lightbox.
+* Opening Account from the mobile menu no longer opens the modal twice.
+
 ## [v1.1.0-beta.2] — 2026-08-11
 
 ### Highlights
