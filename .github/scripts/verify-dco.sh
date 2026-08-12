@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Verify all commits in a PR include Signed-off-by (DCO).
+# Merge commits are skipped: the forge generates the PR merge commit itself,
+# so no contributor can sign it off.
 set -euo pipefail
 
 if [[ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]]; then
@@ -18,7 +20,7 @@ while IFS= read -r sha; do
     git log -1 --oneline "$sha"
     missing=1
   fi
-done < <(git rev-list "origin/${base}"..HEAD)
+done < <(git rev-list --no-merges "origin/${base}"..HEAD)
 
 if [[ "$missing" -ne 0 ]]; then
   echo ""
