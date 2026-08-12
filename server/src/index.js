@@ -12,7 +12,7 @@ const fs = require('fs');
 
 const { query, pool } = require('./db');
 const { enc, dec } = require('./crypto');
-const { sanitizeSiteInput, sanitizeFavoriteKey, clampPost } = require('./sanitize');
+const { sanitizeFavoriteKey, clampPost } = require('./sanitize');
 const {
   isBooruHostAllowed,
   isProxyAllowed,
@@ -63,14 +63,25 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 const MAX_MEDIA_BYTES = Math.max(1, Number(process.env.MAX_MEDIA_BYTES || 512 * 1024 * 1024));
 const MAX_API_PROXY_BYTES = Math.max(1, Number(process.env.MAX_API_PROXY_BYTES || 10 * 1024 * 1024));
 
-if (process.env.NODE_ENV === 'production' && JWT_SECRET === 'dev_secret') {
-  throw new Error('JWT_SECRET must be configured in production');
+const WEAK_JWT_SECRETS = new Set(['dev_secret', 'change_me_to_a_long_random_string', 'secret', 'changeme']);
+const jwtSecretIsWeak = !process.env.JWT_SECRET || WEAK_JWT_SECRETS.has(JWT_SECRET) || /change_me/i.test(JWT_SECRET) || JWT_SECRET.length < 16;
+const allowInsecureSecret = process.env.ALLOW_INSECURE_JWT_SECRET === '1'
+  || process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test' || process.env.SB_DEV === '1';
+if (jwtSecretIsWeak) {
+  if (!allowInsecureSecret) {
+    throw new Error('JWT_SECRET must be a strong random value (>= 16 chars, not a placeholder). Set ALLOW_INSECURE_JWT_SECRET=1 for local development only.');
+  }
+  console.warn('[security] JWT_SECRET is weak or a placeholder — issued tokens are forgeable. Do not use this in production.');
+}
+if (/change_me/i.test(process.env.ENC_SECRET || '') || !(process.env.ENC_SECRET || '').length) {
+  console.warn('[security] ENC_SECRET is unset or a placeholder — stored site credentials are weakly encrypted.');
 }
 
 const authRateLimit = createRateLimit({ windowMs: 10 * 60_000, max: 30, label: 'authentication' });
 const apiProxyRateLimit = createRateLimit({ windowMs: 60_000, max: 120, label: 'booru proxy' });
 const mediaRateLimit = createRateLimit({ windowMs: 60_000, max: 240, label: 'media proxy' });
 const mediaConcurrencyLimit = createConcurrencyLimit({ maxGlobal: 60, maxPerClient: 8, label: 'media proxy' });
+const countsRateLimit = createRateLimit({ windowMs: 60_000, max: 120, label: 'favourite counts' });
 
 app.use(['/auth/local/register', '/auth/local/login', '/auth/discord'], authRateLimit);
 
@@ -89,7 +100,7 @@ function auth(req, res, next) {
     const h = req.headers.authorization || '';
     const m = /^Bearer\s+(.+)$/.exec(h);
     if (!m) return res.status(401).json({ ok: false, error: 'missing token' });
-    const decd = jwt.verify(m[1], JWT_SECRET);
+    const decd = jwt.verify(m[1], JWT_SECRET, { algorithms: ['HS256'] });
     req.user = { id: decd.sub, name: decd.name || '', avatar: decd.avatar || '' };
     next();
   } catch {
@@ -222,8 +233,8 @@ app.post('/auth/local/register', async (req, res) => {
 app.post('/auth/local/login', async (req, res) => {
   try {
     const b = bodyObj(req);
-    const username = String(b.username || req.query?.username || '').trim();
-    const password = String(b.password || req.query?.password || '');
+    const username = String(b.username || '').trim();
+    const password = String(b.password || '');
     if (!username || !password) return res.status(400).json({ ok: false, error: 'missing credentials' });
 
     const r = await query(
@@ -288,7 +299,7 @@ app.get('/auth/discord/callback', async (req, res) => {
     const stateRaw = String(req.query.state || '');
     if (!code) return res.status(400).send('Missing code');
 
-    let state = {}; try { state = jwt.verify(stateRaw, JWT_SECRET); } catch { state = {}; }
+    let state = {}; try { state = jwt.verify(stateRaw, JWT_SECRET, { algorithms: ['HS256'] }); } catch { state = {}; }
 
     const tokRes = await fetch('https://discord.com/api/oauth2/token', {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -371,17 +382,22 @@ app.get('/api/me', auth, async (req, res) => {
   res.json({ ok: true, user: { id: u.id, name: u.username || '', avatar: u.avatar || '', discord_id: u.discord_id || null } });
 });
 
-/* ---------- favourites (British primary) ---------- */
-app.get('/api/favourites/keys', auth, async (req, res) => {
+/* ---------- favourites (British + US spellings share one handler) ---------- */
+const FAV_KEYS_PATHS = ['/api/favourites/keys', '/api/favorites/keys'];
+const FAV_LIST_PATHS = ['/api/favourites', '/api/favorites'];
+const FAV_KEY_PATHS = ['/api/favourites/:key', '/api/favorites/:key'];
+const FAV_BULK_PATHS = ['/api/favourites/bulk_upsert', '/api/favorites/bulk_upsert'];
+
+app.get(FAV_KEYS_PATHS, auth, async (req, res) => {
   const r = await query('SELECT key FROM favorites WHERE user_id = $1 ORDER BY added_at DESC', [req.user.id]);
   res.json({ ok: true, keys: r.rows.map(x => x.key) });
 });
-app.get('/api/favourites', auth, async (req, res) => {
+app.get(FAV_LIST_PATHS, auth, async (req, res) => {
   const r = await query('SELECT key, added_at, post_json FROM favorites WHERE user_id = $1 ORDER BY added_at DESC', [req.user.id]);
   const items = r.rows.map(row => ({ key: row.key, added_at: Number(row.added_at) || 0, post: row.post_json })).filter(x => x.post);
   res.json({ ok: true, items });
 });
-app.put('/api/favourites/:key', auth, async (req, res) => {
+app.put(FAV_KEY_PATHS, auth, async (req, res) => {
   try {
     const key = sanitizeFavoriteKey(req.params.key);
     const post = clampPost(bodyObj(req)?.post);
@@ -398,7 +414,7 @@ app.put('/api/favourites/:key', auth, async (req, res) => {
     res.status(500).json({ ok: false });
   }
 });
-app.delete('/api/favourites/:key', auth, async (req, res) => {
+app.delete(FAV_KEY_PATHS, auth, async (req, res) => {
   try {
     const key = sanitizeFavoriteKey(req.params.key);
     if (!key) return res.status(400).json({ ok: false, error: 'bad key' });
@@ -409,97 +425,46 @@ app.delete('/api/favourites/:key', auth, async (req, res) => {
     res.status(500).json({ ok: false });
   }
 });
-app.post('/api/favourites/bulk_upsert', auth, async (req, res) => {
+app.post(FAV_BULK_PATHS, auth, async (req, res) => {
   try {
-    const b = bodyObj(req);
-    const items = Array.isArray(b.items) ? b.items : [];
+    const items = Array.isArray(bodyObj(req).items) ? bodyObj(req).items : [];
     const now = Date.now();
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      for (const it of items) {
-        const key = sanitizeFavoriteKey(it?.key);
-        const post = clampPost(it?.post);
-        if (!key || !post) continue;
-        const added_at = Number(it?.added_at) || now;
-        await client.query(`
-          INSERT INTO favorites (user_id, key, added_at, post_json)
-          VALUES ($1, $2, $3, $4::jsonb)
-          ON CONFLICT(user_id, key) DO UPDATE SET added_at = EXCLUDED.added_at, post_json = EXCLUDED.post_json
-        `, [req.user.id, key, added_at, post]);
-      }
-      await client.query('COMMIT');
-    } catch (e) { try { await client.query('ROLLBACK'); } catch {} throw e; }
-    finally { client.release(); }
-    emitTo(req.user.id, 'fav_changed', { bulk: true, count: items.length, at: Date.now() });
-    res.json({ ok: true, upserted: items.length });
+    const keys = [], addedAts = [], posts = [];
+    for (const it of items) {
+      const key = sanitizeFavoriteKey(it?.key);
+      const post = clampPost(it?.post);
+      if (!key || !post) continue;
+      keys.push(key);
+      addedAts.push(Number(it?.added_at) || now);
+      posts.push(JSON.stringify(post));
+    }
+    if (keys.length) {
+      // one round trip instead of a query per favourite
+      await query(`
+        INSERT INTO favorites (user_id, key, added_at, post_json)
+        SELECT $1, k, a, p::jsonb FROM unnest($2::text[], $3::bigint[], $4::text[]) AS t(k, a, p)
+        ON CONFLICT (user_id, key) DO UPDATE SET added_at = EXCLUDED.added_at, post_json = EXCLUDED.post_json
+      `, [req.user.id, keys, addedAts, posts]);
+    }
+    emitTo(req.user.id, 'fav_changed', { bulk: true, count: keys.length, at: Date.now() });
+    res.json({ ok: true, upserted: keys.length });
   } catch {
     res.status(500).json({ ok: false });
   }
 });
 
-/* ---------- favorites (US spelling direct handlers) ---------- */
-app.get('/api/favorites/keys', auth, async (req, res) => {
-  const r = await query('SELECT key FROM favorites WHERE user_id = $1 ORDER BY added_at DESC', [req.user.id]);
-  res.json({ ok: true, keys: r.rows.map(x => x.key) });
-});
-app.get('/api/favorites', auth, async (req, res) => {
-  const r = await query('SELECT key, added_at, post_json FROM favorites WHERE user_id = $1 ORDER BY added_at DESC', [req.user.id]);
-  const items = r.rows.map(row => ({ key: row.key, added_at: Number(row.added_at) || 0, post: row.post_json })).filter(x => x.post);
-  res.json({ ok: true, items });
-});
-app.put('/api/favorites/:key', auth, async (req, res) => {
+/* ---------- public favourite counts (no auth: aggregate only) ---------- */
+app.post('/api/favourites/counts', countsRateLimit, async (req, res) => {
   try {
-    const key = sanitizeFavoriteKey(req.params.key);
-    const post = clampPost(bodyObj(req)?.post);
-    if (!key || !post) return res.status(400).json({ ok: false, error: 'bad key/post' });
-    const added_at = Number(bodyObj(req)?.added_at) || Date.now();
-    await query(`
-      INSERT INTO favorites (user_id, key, added_at, post_json)
-      VALUES ($1, $2, $3, $4::jsonb)
-      ON CONFLICT(user_id, key) DO UPDATE SET added_at = EXCLUDED.added_at, post_json = EXCLUDED.post_json
-    `, [req.user.id, key, added_at, post]);
-    emitTo(req.user.id, 'fav_changed', { key, added_at });
-    res.json({ ok: true });
-  } catch {
-    res.status(500).json({ ok: false });
-  }
-});
-app.delete('/api/favorites/:key', auth, async (req, res) => {
-  try {
-    const key = sanitizeFavoriteKey(req.params.key);
-    if (!key) return res.status(400).json({ ok: false, error: 'bad key' });
-    await query('DELETE FROM favorites WHERE user_id = $1 AND key = $2', [req.user.id, key]);
-    emitTo(req.user.id, 'fav_changed', { key, removed: true });
-    res.json({ ok: true });
-  } catch {
-    res.status(500).json({ ok: false });
-  }
-});
-app.post('/api/favorites/bulk_upsert', auth, async (req, res) => {
-  try {
-    const b = bodyObj(req);
-    const items = Array.isArray(b.items) ? b.items : [];
-    const now = Date.now();
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      for (const it of items) {
-        const key = sanitizeFavoriteKey(it?.key);
-        const post = clampPost(it?.post);
-        if (!key || !post) continue;
-        const added_at = Number(it?.added_at) || now;
-        await client.query(`
-          INSERT INTO favorites (user_id, key, added_at, post_json)
-          VALUES ($1, $2, $3, $4::jsonb)
-          ON CONFLICT(user_id, key) DO UPDATE SET added_at = EXCLUDED.added_at, post_json = EXCLUDED.post_json
-        `, [req.user.id, key, added_at, post]);
-      }
-      await client.query('COMMIT');
-    } catch (e) { try { await client.query('ROLLBACK'); } catch {} throw e; }
-    finally { client.release(); }
-    emitTo(req.user.id, 'fav_changed', { bulk: true, count: items.length, at: Date.now() });
-    res.json({ ok: true, upserted: items.length });
+    const raw = bodyObj(req)?.keys;
+    const keys = [...new Set((Array.isArray(raw) ? raw : [])
+      .map((k) => sanitizeFavoriteKey(k))
+      .filter(Boolean))].slice(0, 200);
+    if (keys.length === 0) return res.json({ ok: true, counts: {} });
+    const r = await query('SELECT key, COUNT(*)::int AS n FROM favorites WHERE key = ANY($1) GROUP BY key', [keys]);
+    const counts = {};
+    for (const row of r.rows) counts[row.key] = Number(row.n) || 0;
+    res.json({ ok: true, counts });
   } catch {
     res.status(500).json({ ok: false });
   }
@@ -513,7 +478,7 @@ function normBaseUrl(u) {
 
 app.get('/api/sites', auth, async (req, res) => {
   const r = await query(`
-    SELECT site_id, name, type, base_url, rating, tags, query_dialect, credentials_enc, order_index
+    SELECT site_id, name, type, base_url, rating, tags, query_dialect, credentials_enc, order_index, enabled
     FROM user_sites WHERE user_id = $1 ORDER BY order_index ASC, created_at ASC
   `, [req.user.id]);
   const sites = r.rows.map(row => {
@@ -526,6 +491,7 @@ app.get('/api/sites', auth, async (req, res) => {
       rating: row.rating,
       tags: row.tags,
       queryDialect: row.query_dialect || 'auto',
+      enabled: row.enabled !== false,
       credentials: creds,
       order_index: row.order_index
     };
@@ -549,6 +515,7 @@ app.put('/api/sites', auth, async (req, res) => {
       const requestedDialect = String(s.queryDialect || s.query_dialect || 'auto').toLowerCase();
       const query_dialect = ['auto', 'gelbooru', 'rule34'].includes(requestedDialect) ? requestedDialect : 'auto';
       const order_index = Number(s.order_index ?? idx) || idx;
+      const enabled = s.enabled !== false && s.enabled !== 'false';
 
       const credIn = (s && typeof s.credentials === 'object' && !Array.isArray(s.credentials)) ? s.credentials : {};
       const credentials = {};
@@ -566,7 +533,7 @@ app.put('/api/sites', auth, async (req, res) => {
           }
         });
       }
-      return { name, type, base_url, rating, tags, query_dialect, order_index, credentials };
+      return { name, type, base_url, rating, tags, query_dialect, order_index, enabled, credentials };
     }).filter(s => s.type && s.base_url);
 
     const now = Date.now();
@@ -579,9 +546,9 @@ app.put('/api/sites', auth, async (req, res) => {
         const credsEnc = enc(s.credentials || {});
         const site_id = cryptoRandomId();
         await client.query(`
-          INSERT INTO user_sites (site_id, user_id, name, type, base_url, rating, tags, query_dialect, credentials_enc, order_index, created_at, updated_at)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12)
-        `, [site_id, req.user.id, s.name, s.type, s.base_url, s.rating, s.tags, s.query_dialect, credsEnc, s.order_index ?? i, now, now]);
+          INSERT INTO user_sites (site_id, user_id, name, type, base_url, rating, tags, query_dialect, credentials_enc, order_index, enabled, created_at, updated_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13)
+        `, [site_id, req.user.id, s.name, s.type, s.base_url, s.rating, s.tags, s.query_dialect, credsEnc, s.order_index ?? i, s.enabled !== false, now, now]);
       }
       await client.query('COMMIT');
     } catch (e) {
