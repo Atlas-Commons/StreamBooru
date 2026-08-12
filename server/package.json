@@ -5,7 +5,7 @@
   "type": "commonjs",
   "main": "src/index.js",
   "scripts": {
-    "start": "bun src/index.js",
+    "start": "bun src/serve.js",
     "migrate": "bun src/migrate.js",
     "start:prod": "bun run migrate && bun run start"
   },

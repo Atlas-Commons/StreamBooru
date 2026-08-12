@@ -788,6 +788,4 @@ function startServer(port = PORT, host = HOST) {
   return server;
 }
 
-if (require.main === module) startServer();
-
 module.exports = { app, startServer };
