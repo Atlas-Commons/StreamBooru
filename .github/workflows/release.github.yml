@@ -132,9 +132,14 @@ jobs:
 
       - name: Install Flatpak tooling
         run: |
+          set -euo pipefail
+          if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=""; fi
           export DEBIAN_FRONTEND=noninteractive
-          apt-get update
-          apt-get install -y flatpak flatpak-builder
+          $SUDO apt-get update -qq
+          $SUDO apt-get install -y -qq flatpak flatpak-builder
+          # flatpak-builder shells out to bwrap, which needs unprivileged user
+          # namespaces that Ubuntu 24.04 and later confine by default.
+          $SUDO sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           flatpak --user remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
           flatpak --user install -y --noninteractive flathub \
             org.freedesktop.Platform//24.08 \
