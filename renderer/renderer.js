@@ -1,8 +1,17 @@
-// Renderer with Search/New/Popular/Favorites, Manage Sites,
-// Bulk Download, and filename templates (popover from Download All)
+// Renderer with Search/New/Popular/Favorites, Manage Sites, Settings,
+// bulk download, filename templates and tag autocomplete
+
+const DEFAULT_SETTINGS = {
+  theme: 'dark',          // 'dark' | 'light'
+  density: 'cozy',        // 'compact' | 'cozy' | 'comfortable'
+  cardFit: 'cover',       // 'cover' | 'natural'
+  autoplayVideoThumbs: true,
+  blurUnsafe: false
+};
 
 const state = {
   config: { sites: [] },
+  settings: { ...DEFAULT_SETTINGS },
   viewType: 'new',
   cursors: {},
   items: [],
@@ -43,9 +52,18 @@ const state = {
 };
 
 // ---------- utils ----------
+// memoized: itemKey/siteKey run this in every dedupe and render loop
+const baseUrlCache = new Map();
 function normalizeBaseUrl(u) {
-  try { const url = new URL(String(u || '').trim()); url.hash = ''; url.search = ''; return url.toString().replace(/\/+$/, ''); }
-  catch { return String(u || '').replace(/\/+$/, ''); }
+  const raw = String(u || '');
+  let v = baseUrlCache.get(raw);
+  if (v === undefined) {
+    try { const url = new URL(raw.trim()); url.hash = ''; url.search = ''; v = url.toString().replace(/\/+$/, ''); }
+    catch { v = raw.replace(/\/+$/, ''); }
+    if (baseUrlCache.size > 500) baseUrlCache.clear();
+    baseUrlCache.set(raw, v);
+  }
+  return v;
 }
 function siteKey(site) { return `${site.type}:${normalizeBaseUrl(site.baseUrl || '')}`; }
 function itemKey(p) { return `${normalizeBaseUrl(p.site?.baseUrl || '')}#${p.id}`; }
@@ -62,6 +80,17 @@ function tagsInclude(p, searchStr) {
   if (wanted.length === 0) return true;
   const hay = new Set((p.tags || []).map((t) => String(t).toLowerCase()));
   return wanted.every((t) => hay.has(String(t).toLowerCase()));
+}
+function notify(message, opts) {
+  if (typeof window.toast === 'function') window.toast(message, opts);
+  else alert(message);
+}
+function notifyError(message) { notify(message, { type: 'error' }); }
+function configuredSites() {
+  return (state.config?.sites || []).filter((s) => s?.baseUrl && s?.type);
+}
+function enabledSites() {
+  return configuredSites().filter((s) => s.enabled !== false);
 }
 
 // Robust scroll helpers (Android WebView safe)
@@ -100,6 +129,27 @@ function anyMediaActive() {
     }
   } catch {}
   return false;
+}
+
+// ---------- settings ----------
+function applySettings() {
+  const s = state.settings || DEFAULT_SETTINGS;
+  document.documentElement.dataset.theme = s.theme === 'light' ? 'light' : 'dark';
+  document.body.dataset.density = ['compact', 'cozy', 'comfortable'].includes(s.density) ? s.density : 'cozy';
+  document.body.dataset.fit = s.cardFit === 'natural' ? 'natural' : 'cover';
+  document.body.dataset.blur = s.blurUnsafe ? 'on' : 'off';
+  window.__sbSettings = { ...s };
+  relayoutNaturalGrid();
+}
+window.updateAppSettings = async (patch) => {
+  state.settings = { ...DEFAULT_SETTINGS, ...(state.settings || {}), ...(patch || {}) };
+  applySettings();
+  await saveConfigPatch({ settings: state.settings });
+};
+
+async function saveConfigPatch(patch) {
+  state.config = { ...(state.config || {}), ...(patch || {}) };
+  try { await window.api.saveConfig(state.config); } catch (e) { console.warn('saveConfig failed', e); }
 }
 
 // Popularity helpers
@@ -298,9 +348,9 @@ function updateFeedHeader() {
   const refresh = document.getElementById('btn-refresh-feed');
   if (!title || !description || !count) return;
 
-  const sourceCount = (state.config?.sites || []).filter((site) => site?.baseUrl && site?.type).length;
+  const sourceCount = enabledSites().length;
   const copy = {
-    new: ['New', `Latest posts across ${sourceCount || 'your'} configured source${sourceCount === 1 ? '' : 's'}`],
+    new: ['New', `Latest posts across ${sourceCount || 'your'} enabled source${sourceCount === 1 ? '' : 's'}`],
     popular: ['Popular', 'High-scoring posts from across your sources'],
     search: ['Search', state.search ? `Results for “${state.search}”` : 'Gelbooru syntax is translated for compatible sources'],
     faves: ['Favourites', 'Everything you have saved, in one place']
@@ -325,6 +375,7 @@ function ensureScrollSentinel() {
     s.id = 'scroll-sentinel';
     s.style.width = '1px';
     s.style.height = '1px';
+    s.style.gridColumn = '1 / -1';
   }
   if (s.parentNode !== feed) feed.appendChild(s);
   else if (feed.lastElementChild !== s) feed.appendChild(s);
@@ -338,24 +389,223 @@ function observeSentinel() {
   } catch {}
 }
 
-function renderAppend() {
+// ---------- skeletons + empty states ----------
+function showSkeletons(count = 12) {
   const feed = document.getElementById('feed');
-  const start = feed.querySelectorAll(':scope > .card').length;
-  for (let i = start; i < state.items.length; i++) feed.appendChild(window.PostCard(state.items[i], i));
-  ensureScrollSentinel(); observeSentinel();
+  if (!feed || feed.querySelector(':scope > .card') || feed.querySelector(':scope > .card-skeleton')) return;
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < count; i++) {
+    const sk = document.createElement('div');
+    sk.className = 'card-skeleton';
+    sk.setAttribute('aria-hidden', 'true');
+    const thumb = document.createElement('div');
+    thumb.className = 'sk-thumb';
+    const bar = document.createElement('div');
+    bar.className = 'sk-bar';
+    sk.appendChild(thumb);
+    sk.appendChild(bar);
+    frag.appendChild(sk);
+  }
+  feed.appendChild(frag);
+  ensureScrollSentinel();
+}
+function clearSkeletons() {
+  document.querySelectorAll('#feed > .card-skeleton').forEach((el) => el.remove());
+}
+function clearFeedEmptyState() {
+  document.getElementById('feed-empty')?.remove();
+}
+function renderFeedEmptyState(kind) {
+  clearSkeletons();
+  clearFeedEmptyState();
+  document.getElementById('loading')?.classList.add('hidden');
+  const feed = document.getElementById('feed');
+  if (!feed) return;
+
+  const box = document.createElement('div');
+  box.id = 'feed-empty';
+  box.className = 'empty-state';
+
+  const art = document.createElement('div');
+  art.className = 'empty-art';
+  const title = document.createElement('h3');
+  const text = document.createElement('p');
+  const actions = document.createElement('div');
+  actions.className = 'empty-actions';
+
+  const button = (label, onClick, accent = false) => {
+    const b = document.createElement('button');
+    b.className = accent ? 'link-btn accent' : 'link-btn';
+    b.textContent = label;
+    b.addEventListener('click', onClick);
+    return b;
+  };
+
+  if (kind === 'no-sites') {
+    art.textContent = '🌊';
+    title.textContent = 'Welcome to StreamBooru';
+    text.textContent = 'Add at least one booru source to start browsing. Presets are available for Danbooru, Gelbooru, Yande.re, e621 and more.';
+    actions.appendChild(button('Open Manage Sites', () => document.getElementById('btn-manage-sites')?.click(), true));
+  } else if (kind === 'all-disabled') {
+    art.textContent = '🌫';
+    title.textContent = 'All sources are disabled';
+    text.textContent = 'Re-enable a source below the feed header, or manage the full list in Sites.';
+    actions.appendChild(button('Open Manage Sites', () => document.getElementById('btn-manage-sites')?.click(), true));
+  } else if (kind === 'no-results') {
+    art.textContent = '🔍';
+    title.textContent = state.search ? `No results for “${state.search}”` : 'No results';
+    text.textContent = 'Check the tag spelling, loosen the rating filter in Manage Sites, or try fewer tags.';
+    if (state.search) actions.appendChild(button('Clear search', () => document.getElementById('tag-clear-btn')?.click()));
+  } else if (kind === 'no-faves') {
+    art.textContent = '♥';
+    if (state.search) {
+      title.textContent = 'No favourites match your filter';
+      text.textContent = 'Try different tags, or clear the filter to see everything you saved.';
+      actions.appendChild(button('Clear filter', () => document.getElementById('tag-clear-btn')?.click()));
+    } else {
+      title.textContent = 'No favourites yet';
+      text.textContent = 'Press Fave on any post to keep it here. Log in from Account to sync favourites across devices.';
+      actions.appendChild(button('Browse new posts', () => document.getElementById('tab-new')?.click(), true));
+    }
+  }
+
+  box.appendChild(art);
+  box.appendChild(title);
+  box.appendChild(text);
+  if (actions.children.length) box.appendChild(actions);
+  feed.appendChild(box);
+}
+
+// ---------- StreamBooru community fave counts ----------
+const sbFaveCounts = new Map();     // itemKey -> count
+const sbFaveRequested = new Set();  // keys already queried this session
+const sbFaveQueue = new Set();
+let sbFaveTimer = null;
+let sbFaveBackoffUntil = 0;         // pause queries while the sync server is unreachable
+
+window.getSbFaveCount = (post) => {
+  const n = sbFaveCounts.get(itemKey(post));
+  return Number.isFinite(n) ? n : null;
+};
+
+function applySbFaveCount(key) {
+  const card = cardCache.get(key);
+  const el = card?.querySelector?.('.sb-favs');
+  if (!el) return;
+  const n = sbFaveCounts.get(key) || 0;
+  if (n > 0) {
+    el.textContent = `♥ ${n}`;
+    el.title = `${n} StreamBooru user${n === 1 ? '' : 's'} faved this`;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function flushSbFaveQueue() {
+  if (sbFaveTimer || sbFaveQueue.size === 0) return;
+  if (Date.now() < sbFaveBackoffUntil) return;
+  sbFaveTimer = setTimeout(async () => {
+    sbFaveTimer = null;
+    const batch = [...sbFaveQueue].slice(0, 200);
+    batch.forEach((k) => sbFaveQueue.delete(k));
+    const fail = () => {
+      // Allow a retry later, but stop asking a dead server on every batch
+      batch.forEach((k) => sbFaveRequested.delete(k));
+      sbFaveBackoffUntil = Date.now() + 60_000;
+    };
+    try {
+      const res = await window.api.favCounts(batch);
+      if (res?.ok) {
+        for (const k of batch) sbFaveCounts.set(k, Number(res.counts?.[k]) || 0);
+        batch.forEach(applySbFaveCount);
+      } else {
+        fail();
+      }
+    } catch {
+      fail();
+    }
+    flushSbFaveQueue();
+  }, 250);
+}
+
+function queueSbFaveCounts(keys) {
+  if (typeof window.api?.favCounts !== 'function') return;
+  for (const k of keys) {
+    if (sbFaveRequested.has(k)) continue;
+    sbFaveRequested.add(k);
+    sbFaveQueue.add(k);
+  }
+  flushSbFaveQueue();
+}
+
+// Re-query one post's count after a fave toggle syncs
+function refreshSbFaveCount(post) {
+  const key = itemKey(post);
+  sbFaveRequested.delete(key);
+  queueSbFaveCounts([key]);
+}
+
+// ---------- keyed feed rendering ----------
+const cardCache = new Map(); // itemKey -> card element
+
+function getCardFor(post, index) {
+  const key = itemKey(post);
+  let el = cardCache.get(key);
+  if (!el) {
+    el = window.PostCard(post, index);
+    cardCache.set(key, el);
+  }
+  return el;
+}
+
+// Reconcile #feed with state.items, reusing card nodes so re-sorts don't
+// re-decode images or restart playing video thumbs
+function syncFeedChildren() {
+  const feed = document.getElementById('feed');
+  if (!feed) return;
+  clearSkeletons();
+  if (state.items.length > 0) clearFeedEmptyState();
+
+  const sentinel = ensureScrollSentinel();
+  const desired = state.items.map((p, i) => getCardFor(p, i));
+  const desiredSet = new Set(desired);
+
+  for (const child of [...feed.children]) {
+    if (child === sentinel || child.id === 'feed-empty') continue;
+    if (!desiredSet.has(child)) child.remove();
+  }
+  for (let i = 0; i < desired.length; i++) {
+    const node = desired[i];
+    if (feed.children[i] !== node) feed.insertBefore(node, feed.children[i] || null);
+  }
+  // Prune cached cards that belong to other views once the cache gets large
+  if (cardCache.size > desired.length + 400) {
+    const keep = new Set(state.items.map(itemKey));
+    for (const [key, el] of cardCache) {
+      if (!keep.has(key) && !el.isConnected) cardCache.delete(key);
+    }
+  }
+  ensureScrollSentinel();
+  observeSentinel();
   updateFeedHeader();
+  relayoutNaturalGrid();
+  queueSbFaveCounts(state.items.map(itemKey));
+}
+
+function renderAppend() {
+  syncFeedChildren();
 }
 function renderReplacePreserveScroll() {
   const feed = document.getElementById('feed');
   const topbarH = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--topbar-h')) || 64;
   let anchorKey = null, anchorTop = null;
   for (const child of Array.from(feed.children)) {
+    if (!child.classList?.contains('card')) continue;
     const rect = child.getBoundingClientRect();
     if (rect.bottom > topbarH) { anchorKey = child.dataset?.key || null; anchorTop = rect.top; break; }
   }
-  feed.innerHTML = '';
-  window.getGalleryItems = () => state.items;
-  for (let i=0;i<state.items.length;i++) feed.appendChild(window.PostCard(state.items[i], i));
+  syncFeedChildren();
   if (anchorKey) {
     const newAnchor = feed.querySelector(`[data-key="${CSS.escape(anchorKey)}"]`);
     if (newAnchor && typeof anchorTop === 'number') {
@@ -363,18 +613,52 @@ function renderReplacePreserveScroll() {
       window.scrollBy(0, rect2.top - anchorTop);
     }
   }
-  ensureScrollSentinel(); observeSentinel();
-  updateFeedHeader();
 }
 function renderReplaceNoPreserve() {
-  const feed = document.getElementById('feed');
-  feed.innerHTML = '';
-  window.getGalleryItems = () => state.items;
-  for (let i=0;i<state.items.length;i++) feed.appendChild(window.PostCard(state.items[i], i));
-  ensureScrollSentinel(); observeSentinel();
-  updateFeedHeader();
+  syncFeedChildren();
 }
 window.getGalleryItems = () => state.items;
+
+// ---------- natural-aspect grid layout ----------
+let naturalLayoutPending = false;
+let naturalLayoutApplied = false;
+function relayoutNaturalGrid() {
+  if (naturalLayoutPending) return;
+  // no-op in square-crop mode unless there are leftover spans to clear
+  if (document.body.dataset.fit !== 'natural' && !naturalLayoutApplied) return;
+  naturalLayoutPending = true;
+  requestAnimationFrame(() => {
+    naturalLayoutPending = false;
+    const feed = document.getElementById('feed');
+    if (!feed) return;
+    const cards = feed.querySelectorAll(':scope > .card');
+    if (document.body.dataset.fit !== 'natural') {
+      cards.forEach((el) => { if (el.style.gridRowEnd) el.style.gridRowEnd = ''; });
+      naturalLayoutApplied = false;
+      return;
+    }
+    if (!cards.length) return;
+    naturalLayoutApplied = true;
+    const rowUnit = 8;
+    // Read all layout up front (actions height is effectively constant), then
+    // write every span — no read/write interleaving means one reflow, not N.
+    const gap = parseFloat(getComputedStyle(feed).rowGap) || 12;
+    const width = cards[0].getBoundingClientRect().width;
+    if (!width) return;
+    const actionsH = cards[0].querySelector('.actions')?.offsetHeight || 52;
+    const spans = new Array(cards.length);
+    for (let i = 0; i < cards.length; i++) {
+      const ar = Number(cards[i].dataset.ar) || 1;
+      const total = (width / ar) + actionsH + 2;
+      spans[i] = Math.max(1, Math.ceil((total + gap) / (rowUnit + gap)));
+    }
+    for (let i = 0; i < cards.length; i++) {
+      const value = `span ${spans[i]}`;
+      if (cards[i].style.gridRowEnd !== value) cards[i].style.gridRowEnd = value;
+    }
+  });
+}
+window.addEventListener('resize', () => relayoutNaturalGrid());
 
 // --------- caching current view (for instant tab switching) ----------
 const VIEW_CACHE_TTL_MS = {
@@ -496,7 +780,14 @@ function allSitesEnded() {
 
 async function fetchBatch() {
   const loadingEl = document.getElementById('loading');
-  if (state.noMoreResults) { loadingEl.classList.remove('hidden'); loadingEl.textContent = 'End of results'; return; }
+  if (state.noMoreResults) {
+    if (state.items.length === 0) {
+      renderFeedEmptyState(state.viewType === 'faves' ? 'no-faves' : 'no-results');
+    } else {
+      loadingEl.classList.remove('hidden'); loadingEl.textContent = 'End of results';
+    }
+    return;
+  }
   if (state.loading) { state.pendingFetch = true; return; }
 
   const gen = state.fetchGen;
@@ -510,6 +801,7 @@ async function fetchBatch() {
     renderReplaceNoPreserve();
     scrollToTop();
     loadingEl.classList.add('hidden');
+    if (state.items.length === 0) renderFeedEmptyState('no-faves');
     state.loading = false;
     updateFeedHeader();
     saveViewCache();
@@ -517,15 +809,20 @@ async function fetchBatch() {
     return;
   }
 
-  const sites = (state.config.sites || []).filter((s)=> s.baseUrl && s.type);
-  if (sites.length === 0) { loadingEl.textContent = 'No sites configured. Open Sites to add one.'; state.loading = false; updateFeedHeader(); return; }
+  const sites = enabledSites();
+  if (sites.length === 0) {
+    renderFeedEmptyState(configuredSites().length === 0 ? 'no-sites' : 'all-disabled');
+    state.loading = false;
+    updateFeedHeader();
+    return;
+  }
 
   const doSearch = state.viewType === 'search' && (state.search || '').trim().length > 0;
   const isPopular = state.viewType === 'popular';
   const isNew = state.viewType === 'new';
 
   if (isPopular) {
-    await fetchPopularStreaming(sites, gen, loadingEl, doSearch);
+    await fetchPopularStreaming(sites, gen);
     return;
   }
 
@@ -609,7 +906,12 @@ async function fetchBatch() {
   }
 
   if (addedTotal === 0 && allSitesEnded()) {
-    state.noMoreResults = true; loadingEl.classList.remove('hidden'); loadingEl.textContent = 'End of results';
+    state.noMoreResults = true;
+    if (state.items.length === 0) {
+      renderFeedEmptyState('no-results');
+    } else {
+      loadingEl.classList.remove('hidden'); loadingEl.textContent = 'End of results';
+    }
   } else {
     loadingEl.classList.add('hidden');
   }
@@ -621,9 +923,9 @@ async function fetchBatch() {
 }
 
 // Popular streaming fetch: render per-site as they arrive, but avoid reordering above user
-async function fetchPopularStreaming(sites, gen, loadingEl) {
+async function fetchPopularStreaming(sites, gen) {
   if (!Array.isArray(state.searchOrder) || state.searchOrder.length === 0) {
-    state.searchOrder = (state.config.sites || []).map((s)=> siteKey(s));
+    state.searchOrder = enabledSites().map((s)=> siteKey(s));
   }
 
   let pending = sites.length;
@@ -671,7 +973,7 @@ async function fetchPopularStreaming(sites, gen, loadingEl) {
       if (pending === 0) {
         if (gen !== state.fetchGen) return;
         if (allSitesEnded() && state.items.length === 0) {
-          document.getElementById('loading').textContent = 'End of results';
+          renderFeedEmptyState('no-results');
           state.noMoreResults = true;
         } else {
           document.getElementById('loading').classList.add('hidden');
@@ -694,27 +996,103 @@ function toDownloadItem(post, i) {
   const fileName = buildFileNameFromTemplate(post, i, state.nameTemplate || '{site}-{id}');
   return { url, siteName: sanitizeForFolder(siteName), fileName };
 }
+
+// ----- bulk progress panel -----
+const bulkUi = { visible: false, hideTimer: null };
+function bulkProgressEls() {
+  return {
+    panel: document.getElementById('bulk-progress'),
+    label: document.getElementById('bulk-progress-label'),
+    count: document.getElementById('bulk-progress-count'),
+    bar: document.getElementById('bulk-progress-bar'),
+    cancel: document.getElementById('bulk-progress-cancel')
+  };
+}
+function showBulkProgress() {
+  const { panel, label, count, bar, cancel } = bulkProgressEls();
+  if (!panel) return;
+  clearTimeout(bulkUi.hideTimer);
+  bulkUi.visible = true;
+  label.textContent = 'Downloading…';
+  count.textContent = '';
+  bar.style.width = '0%';
+  cancel.disabled = false;
+  panel.classList.remove('hidden');
+}
+function updateBulkProgress(p) {
+  if (!p || !bulkUi.visible) return;
+  const { label, count, bar } = bulkProgressEls();
+  if (!label) return;
+  const total = Math.max(1, safeNum(p.total, 1));
+  const done = Math.min(safeNum(p.done, 0), total);
+  bar.style.width = `${Math.round((done / total) * 100)}%`;
+  count.textContent = `${done} / ${total}${p.failed ? ` · ${p.failed} failed` : ''}`;
+  label.textContent = p.cancelled ? 'Cancelling…' : 'Downloading…';
+}
+function hideBulkProgress(delay = 600) {
+  clearTimeout(bulkUi.hideTimer);
+  bulkUi.hideTimer = setTimeout(() => {
+    bulkUi.visible = false;
+    bulkProgressEls().panel?.classList.add('hidden');
+  }, delay);
+}
+
 async function onDownloadAllClick() {
   try {
-    if (!window.api?.downloadBulk) { alert('Bulk download is not available in this build.'); return; }
+    if (!window.api?.downloadBulk) { notifyError('Bulk download is not available in this build.'); return; }
     const posts = Array.isArray(state.items) ? state.items : [];
-    if (posts.length === 0) { alert('No results to download.'); return; }
+    if (posts.length === 0) { notify('No results to download.'); return; }
     const items = posts.map(toDownloadItem).filter(Boolean);
-    if (items.length === 0) { alert('No downloadable URLs found in the current results.'); return; }
+    if (items.length === 0) { notify('No downloadable URLs found in the current results.'); return; }
+    showBulkProgress();
     const res = await window.api.downloadBulk(items, { subfolderBySite: true, concurrency: 3 });
-    if (res?.cancelled) return;
-    if (!res?.ok) { alert(`Download failed: ${res?.error || 'unknown error'}`); return; }
+    hideBulkProgress();
+    if (res?.cancelled && !res?.ok) return; // folder dialog dismissed
+    if (!res?.ok) { notifyError(`Download failed: ${res?.error || 'unknown error'}`); return; }
     const failedCount = (res.failed || []).length;
-    alert(`Saved ${res.saved} file(s)${failedCount ? `, ${failedCount} failed` : ''}${res.basePath ? `\nFolder: ${res.basePath}` : ''}`);
+    const where = res.basePath ? ` → ${res.basePath}` : '';
+    if (res.cancelled) {
+      notify(`Download cancelled — saved ${res.saved} of ${items.length}${where}`);
+    } else if (failedCount) {
+      notify(`Saved ${res.saved} file(s), ${failedCount} failed${where}`, { type: 'error' });
+    } else {
+      notify(`Saved ${res.saved} file(s)${where}`, { type: 'success' });
+    }
   } catch (e) {
+    hideBulkProgress(0);
     console.error('Download all error:', e);
-    alert(`Download error: ${e?.message || e}`);
+    notifyError(`Download error: ${e?.message || e}`);
+  }
+}
+
+function setNameTemplate(value) {
+  const v = String(value || '').trim();
+  state.nameTemplate = v || null;
+  saveConfigPatch({ nameTemplate: state.nameTemplate || '' });
+}
+
+function syncTemplateControls() {
+  const select = document.getElementById('name-template');
+  const customRow = document.getElementById('custom-template-row');
+  const customInput = document.getElementById('custom-template');
+  if (!select || !customRow || !customInput) return;
+  const current = state.nameTemplate || '{site}-{id}';
+  const preset = [...select.options].find((o) => o.value === current);
+  if (preset) {
+    select.value = current;
+    customRow.classList.add('hidden');
+  } else {
+    select.value = '__custom__';
+    customRow.classList.remove('hidden');
+    customInput.value = current;
   }
 }
 
 function openDownloadOptionsPopover(anchorEl) {
   const pop = document.getElementById('download-options');
   if (!pop) return;
+
+  syncTemplateControls();
 
   const rect = anchorEl.getBoundingClientRect();
   const margin = 8;
@@ -730,79 +1108,109 @@ function openDownloadOptionsPopover(anchorEl) {
   pop.style.left = `${Math.round(left)}px`;
   pop.style.top = `${Math.round(top)}px`;
 
-  const close = () => { pop.classList.add('hidden'); document.removeEventListener('mousedown', outside); window.removeEventListener('keydown', esc); };
+  let releaseOverlay = null;
+  const close = () => {
+    pop.classList.add('hidden');
+    document.removeEventListener('mousedown', outside);
+    window.removeEventListener('keydown', esc);
+    releaseOverlay?.();
+    releaseOverlay = null;
+  };
   const outside = (e) => { if (!pop.contains(e.target) && e.target !== anchorEl) close(); };
   const esc = (e) => { if (e.key === 'Escape') close(); };
   document.addEventListener('mousedown', outside);
   window.addEventListener('keydown', esc);
+  releaseOverlay = window.SBOverlay?.open?.('download-options', { close, root: pop, lockScroll: false });
 
   const btnClose = document.getElementById('dlopt-close');
   if (btnClose) { btnClose.onclick = close; }
 }
 
-// Safe setup for Download All controls (avoid init crash when not present)
-function safeSetupDownloadAll() {
-  try {
-    if (typeof window.setupDownloadAll === 'function') {
-      window.setupDownloadAll();
-      return;
-    }
-    const btnAll = document.getElementById('btn-download-all');
-    if (btnAll) btnAll.addEventListener('click', onDownloadAllClick);
-
-    const btnOpt = document.getElementById('btn-download-options');
-    if (btnOpt) btnOpt.addEventListener('click', () => openDownloadOptionsPopover(btnOpt));
-  } catch (e) {
-    console.warn('safeSetupDownloadAll failed', e);
+function setupDownloadAll() {
+  const btnAll = document.getElementById('btn-download-all');
+  if (btnAll) {
+    btnAll.addEventListener('click', (e) => {
+      if (e.shiftKey || e.altKey) { openDownloadOptionsPopover(btnAll); return; }
+      onDownloadAllClick();
+    });
+    btnAll.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      openDownloadOptionsPopover(btnAll);
+    });
   }
+
+  const select = document.getElementById('name-template');
+  const customRow = document.getElementById('custom-template-row');
+  const customInput = document.getElementById('custom-template');
+  if (select && customRow && customInput) {
+    select.addEventListener('change', () => {
+      if (select.value === '__custom__') {
+        customRow.classList.remove('hidden');
+        customInput.value = state.nameTemplate && ![...select.options].some((o) => o.value === state.nameTemplate)
+          ? state.nameTemplate
+          : (customInput.value || '');
+        customInput.focus();
+        if (customInput.value.trim()) setNameTemplate(customInput.value);
+      } else {
+        customRow.classList.add('hidden');
+        setNameTemplate(select.value);
+      }
+    });
+    let customTimer = null;
+    customInput.addEventListener('input', () => {
+      clearTimeout(customTimer);
+      customTimer = setTimeout(() => setNameTemplate(customInput.value), 400);
+    });
+    customInput.addEventListener('change', () => setNameTemplate(customInput.value));
+  }
+
+  const cancelBtn = document.getElementById('bulk-progress-cancel');
+  cancelBtn?.addEventListener('click', async () => {
+    cancelBtn.disabled = true;
+    try { await window.api.downloadBulkCancel?.(); } catch {}
+  });
+  window.events?.onDownloadProgress?.((p) => updateBulkProgress(p));
 }
 
 // ---------- Tabs/Search/Manage/Scroll ----------
+function switchToView(viewType, { force = false } = {}) {
+  if (state.viewType === viewType && !force) {
+    if (viewType === 'new' || viewType === 'popular') refreshView(viewType);
+    return;
+  }
+  saveViewCache();
+  state.viewType = viewType;
+  setActiveTab();
+  if (!restoreViewCache({ preserveScroll: false })) { clearFeed(); scrollToTop(); fetchBatch(); }
+  else { scrollToTop(); }
+}
+
 function setupTabs() {
-  document.getElementById('tab-new').addEventListener('click', ()=>{
-    if (state.viewType === 'new') { refreshView('new'); return; }
-    saveViewCache();
-    state.viewType = 'new';
-    setActiveTab();
-    if (!restoreViewCache({ preserveScroll: false })) { clearFeed(); scrollToTop(); fetchBatch(); }
-    else { scrollToTop(); }
-  });
-  document.getElementById('tab-popular').addEventListener('click', ()=>{
-    if (state.viewType === 'popular') { refreshView('popular'); return; }
-    saveViewCache();
-    state.viewType = 'popular';
-    setActiveTab();
-    if (!restoreViewCache({ preserveScroll: false })) { clearFeed(); scrollToTop(); fetchBatch(); }
-    else { scrollToTop(); }
-  });
-  document.getElementById('tab-search').addEventListener('click', ()=>{
-    if (state.viewType !== 'search') {
-      saveViewCache();
-      state.viewType = 'search';
-      setActiveTab();
-      if (!restoreViewCache({ preserveScroll: false })) { clearFeed(); scrollToTop(); fetchBatch(); }
-      else { scrollToTop(); }
-    }
-  });
-  document.getElementById('tab-faves').addEventListener('click', ()=>{
-    if (state.viewType !== 'faves') {
-      saveViewCache();
-      state.viewType = 'faves';
-      setActiveTab();
-      if (!restoreViewCache({ preserveScroll: false })) { clearFeed(); scrollToTop(); fetchBatch(); }
-      else { scrollToTop(); }
-    }
-  });
+  document.getElementById('tab-new').addEventListener('click', ()=> switchToView('new'));
+  document.getElementById('tab-popular').addEventListener('click', ()=> switchToView('popular'));
+  document.getElementById('tab-search').addEventListener('click', ()=> { if (state.viewType !== 'search') switchToView('search'); });
+  document.getElementById('tab-faves').addEventListener('click', ()=> { if (state.viewType !== 'faves') switchToView('faves'); });
 }
 function setActiveTab() {
-  document.querySelectorAll('.tab').forEach((t)=>t.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach((t)=>{
+    t.classList.remove('active');
+    t.setAttribute('aria-selected', 'false');
+  });
   const btn = document.querySelector(`[data-view="${state.viewType}"]`);
-  if (btn) btn.classList.add('active');
+  if (btn) {
+    btn.classList.add('active');
+    btn.setAttribute('aria-selected', 'true');
+  }
   updateFeedHeader();
 }
 async function loadConfig() {
-  state.config = await window.api.loadConfig();
-  state.searchOrder = (state.config.sites || []).map((s)=>siteKey(s));
+  state.config = (await window.api.loadConfig()) || { sites: [] };
+  state.nameTemplate = typeof state.config.nameTemplate === 'string' && state.config.nameTemplate.trim()
+    ? state.config.nameTemplate.trim()
+    : null;
+  state.settings = { ...DEFAULT_SETTINGS, ...(state.config.settings || {}) };
+  state.searchOrder = enabledSites().map((s)=>siteKey(s));
+  applySettings();
 }
 function clearFeed() {
   invalidateViewCache(state.viewType);
@@ -817,11 +1225,70 @@ function clearFeed() {
   state.pendingFetch = false;
   state.fetchGen++;
   state.orderLock = false;
-  document.getElementById('feed').innerHTML = '';
+  cardCache.clear();
+  const feed = document.getElementById('feed');
+  feed.innerHTML = '';
+  clearFeedEmptyState();
+  showSkeletons();
   document.getElementById('loading').classList.remove('hidden');
   document.getElementById('loading').textContent = 'Loading…';
   ensureScrollSentinel(); observeSentinel();
 }
+
+// ---------- source chips ----------
+function renderSourceChips() {
+  const wrap = document.getElementById('source-chips');
+  if (!wrap) return;
+  const sites = configuredSites();
+  wrap.innerHTML = '';
+  if (sites.length < 2) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+
+  sites.forEach((site) => {
+    const enabled = site.enabled !== false;
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'source-chip';
+    chip.setAttribute('aria-pressed', String(enabled));
+    chip.title = enabled ? `Disable ${site.name || site.baseUrl}` : `Enable ${site.name || site.baseUrl}`;
+    const dot = document.createElement('span');
+    dot.className = 'chip-dot';
+    chip.appendChild(dot);
+    chip.appendChild(document.createTextNode(site.name || site.baseUrl));
+    chip.addEventListener('click', async () => {
+      site.enabled = !enabled ? true : false;
+      state.searchOrder = enabledSites().map(siteKey);
+      renderSourceChips();
+      await saveConfigPatch({ sites: state.config.sites });
+      try {
+        const acct = await window.api.accountGet?.();
+        if (acct?.loggedIn) await window.api.sitesSaveRemote(state.config.sites || []);
+      } catch {}
+      for (const k of Object.keys(state.viewCache)) invalidateViewCache(k);
+      if (state.viewType !== 'faves') { clearFeed(); scrollToTop(); fetchBatch(); }
+      else updateFeedHeader();
+    });
+    wrap.appendChild(chip);
+  });
+}
+
+// ---------- search + autocomplete ----------
+function runSearch(query) {
+  const input = document.getElementById('tag-search');
+  if (input) input.value = query;
+  state.search = (query || '').trim();
+  state.viewType = 'search';
+  setActiveTab();
+  clearFeed();
+  scrollToTop();
+  fetchBatch();
+}
+window.searchForTag = (tag) => {
+  const t = String(tag || '').trim();
+  if (!t) return;
+  runSearch(t);
+};
+
 function setupSearch() {
   const form = document.getElementById('search-form');
   const input = document.getElementById('tag-search');
@@ -829,12 +1296,7 @@ function setupSearch() {
   if (state.search) input.value = state.search;
   form.addEventListener('submit', (e)=>{
     e.preventDefault();
-    state.search = (input.value || '').trim();
-    state.viewType = 'search';
-    setActiveTab();
-    clearFeed();
-    scrollToTop();
-    fetchBatch();
+    runSearch(input.value || '');
   });
   btnClear.addEventListener('click', ()=>{
     if (!input.value && !state.search) return;
@@ -846,7 +1308,153 @@ function setupSearch() {
     scrollToTop();
     fetchBatch();
   });
+  attachTagAutocomplete(input, document.getElementById('tag-suggest'), {
+    onPick: () => {}
+  });
+  const menuInput = document.getElementById('mnu-tag-search');
+  if (menuInput) attachTagAutocomplete(menuInput, null, { onPick: () => {} });
 }
+
+const AUTOCOMPLETE_CATEGORY_CLASS = {
+  '1': 'artist',
+  '3': 'copyright',
+  '4': 'character',
+  '5': 'meta',
+  'artist': 'artist',
+  'copyright': 'copyright',
+  'character': 'character',
+  'meta': 'meta'
+};
+
+function attachTagAutocomplete(input, listbox, { onPick } = {}) {
+  if (!input || typeof window.api?.autocomplete !== 'function') return;
+
+  let box = listbox;
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'suggest hidden';
+    box.setAttribute('role', 'listbox');
+    const parent = input.closest('form') || input.parentElement;
+    if (!parent) return;
+    parent.classList.add('has-suggest');
+    parent.appendChild(box);
+  }
+
+  let debounceTimer = null;
+  let requestSeq = 0;
+  let activeIndex = -1;
+  let current = [];
+
+  const close = () => {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    input.setAttribute('aria-expanded', 'false');
+    activeIndex = -1;
+    current = [];
+  };
+
+  const currentToken = () => {
+    const caret = input.selectionStart ?? input.value.length;
+    const before = input.value.slice(0, caret);
+    const m = before.match(/(^|\s)(-?)([^\s]+)$/);
+    if (!m) return null;
+    const raw = m[3];
+    if (!raw || raw.length < 2) return null;
+    if (/^rating:/i.test(raw) || /^(order|sort|score|id|date|width|height|filter_id):/i.test(raw)) return null;
+    return { token: raw, negated: m[2] === '-', start: caret - raw.length, end: caret };
+  };
+
+  const applySuggestion = (sug) => {
+    const tok = currentToken();
+    const value = sug.value;
+    if (!tok) {
+      input.value = `${input.value.trim()} ${value} `.trimStart();
+    } else {
+      input.value = `${input.value.slice(0, tok.start)}${value} ${input.value.slice(tok.end).trimStart()}`;
+      const pos = tok.start + value.length + 1;
+      try { input.setSelectionRange(pos, pos); } catch {}
+    }
+    close();
+    input.focus();
+    onPick?.(value);
+  };
+
+  const setActive = (idx) => {
+    activeIndex = idx;
+    [...box.children].forEach((el, i) => {
+      el.classList.toggle('active', i === idx);
+      el.setAttribute('aria-selected', String(i === idx));
+    });
+  };
+
+  const render = (suggestions) => {
+    current = suggestions;
+    box.innerHTML = '';
+    if (!suggestions.length) { close(); return; }
+    suggestions.forEach((sug, i) => {
+      const opt = document.createElement('button');
+      opt.type = 'button';
+      opt.className = 'suggest-item';
+      opt.setAttribute('role', 'option');
+      opt.setAttribute('aria-selected', 'false');
+      const cat = AUTOCOMPLETE_CATEGORY_CLASS[String(sug.category).toLowerCase()];
+      if (cat) opt.classList.add(`suggest--${cat}`);
+      const name = document.createElement('span');
+      name.className = 'suggest-name';
+      name.textContent = sug.label;
+      opt.appendChild(name);
+      if (sug.count > 0) {
+        const count = document.createElement('span');
+        count.className = 'suggest-count';
+        count.textContent = sug.count >= 1000 ? `${Math.round(sug.count / 1000)}k` : String(sug.count);
+        opt.appendChild(count);
+      }
+      // pointerdown fires before the input blur, so the pick still lands
+      opt.addEventListener('pointerdown', (e) => { e.preventDefault(); applySuggestion(sug); });
+      box.appendChild(opt);
+    });
+    box.classList.remove('hidden');
+    input.setAttribute('aria-expanded', 'true');
+    setActive(-1);
+  };
+
+  const query = async () => {
+    const tok = currentToken();
+    if (!tok) { close(); return; }
+    const seq = ++requestSeq;
+    const sites = enabledSites().slice(0, 4);
+    if (!sites.length) { close(); return; }
+    const settled = await Promise.allSettled(
+      sites.map((site) => window.api.autocomplete({ site: { ...site, baseUrl: normalizeBaseUrl(site.baseUrl) }, prefix: tok.token, limit: 10 }))
+    );
+    if (seq !== requestSeq || document.activeElement !== input) return;
+    const merged = new Map();
+    for (const r of settled) {
+      if (r.status !== 'fulfilled' || !r.value?.ok) continue;
+      for (const s of r.value.suggestions || []) {
+        const key = s.value.toLowerCase();
+        const existing = merged.get(key);
+        if (!existing || s.count > existing.count) merged.set(key, s);
+      }
+    }
+    const list = [...merged.values()].sort((a, b) => b.count - a.count).slice(0, 10);
+    render(list);
+  };
+
+  input.addEventListener('input', () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(query, 220);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (box.classList.contains('hidden')) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActive(Math.min(current.length - 1, activeIndex + 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(Math.max(-1, activeIndex - 1)); }
+    else if (e.key === 'Enter' && activeIndex >= 0 && current[activeIndex]) { e.preventDefault(); applySuggestion(current[activeIndex]); }
+    else if (e.key === 'Escape' || e.key === 'Tab') { close(); }
+  });
+  input.addEventListener('blur', () => setTimeout(close, 120));
+}
+
 function setupFeedHeader() {
   const refresh = document.getElementById('btn-refresh-feed');
   refresh?.addEventListener('click', () => {
@@ -858,7 +1466,7 @@ function setupFeedHeader() {
   document.addEventListener('keydown', (event) => {
     const target = event.target;
     const editing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable;
-    if (event.key === '/' && !editing) {
+    if (event.key === '/' && !editing && !window.SBOverlay?.isOpen()) {
       event.preventDefault();
       input?.focus();
       input?.select();
@@ -874,8 +1482,9 @@ function setupManageSites() {
       const modal = document.getElementById('site-manager');
       if (!window.renderSiteManager) throw new Error('renderSiteManager not loaded');
       window.renderSiteManager(modal, state.config, async (newCfg) => {
-        state.config = newCfg;
-        state.searchOrder = (state.config.sites || []).map((s)=> siteKey(s));
+        state.config = { ...state.config, sites: newCfg.sites || [] };
+        state.searchOrder = enabledSites().map((s)=> siteKey(s));
+        renderSourceChips();
         clearFeed();
         await window.api.saveConfig(state.config);
         try {
@@ -887,19 +1496,44 @@ function setupManageSites() {
       }, () => {});
     } catch (err) {
       console.error('Manage Sites open failed:', err);
-      alert('Failed to open Manage Sites. See Console for details.');
+      notifyError('Failed to open Manage Sites. See Console for details.');
     }
   });
 }
+function setupSettings() {
+  const openSettings = () => {
+    const modal = document.getElementById('settings-manager');
+    if (!modal || typeof window.renderSettings !== 'function') return;
+    window.renderSettings(modal, {
+      settings: { ...state.settings },
+      nameTemplate: state.nameTemplate || '',
+      onChange: async (patch) => {
+        if (Object.prototype.hasOwnProperty.call(patch, 'nameTemplate')) {
+          setNameTemplate(patch.nameTemplate);
+          return;
+        }
+        await window.updateAppSettings(patch);
+      }
+    });
+  };
+  // mnu-settings is forwarded to btn-settings by the mobile menu
+  document.getElementById('btn-settings')?.addEventListener('click', openSettings);
+}
 function setupInfiniteScroll() {
-  // Scroll-based fallback
+  // Scroll-based fallback, coalesced to one layout read per frame
+  let scrollScheduled = false;
   const onScroll = ()=>{
-    if (!state.orderLock && getScrollY() > 300) state.orderLock = true;
-    const nearBottom = (window.innerHeight + getScrollY()) >= (getScrollHeight() - 800);
-    if (nearBottom && !state.loading && !state.noMoreResults) fetchBatch();
+    if (scrollScheduled) return;
+    scrollScheduled = true;
+    requestAnimationFrame(() => {
+      scrollScheduled = false;
+      if (window.SBOverlay?.isOpen()) return;
+      if (!state.orderLock && getScrollY() > 300) state.orderLock = true;
+      const nearBottom = (window.innerHeight + getScrollY()) >= (getScrollHeight() - 800);
+      if (nearBottom && !state.loading && !state.noMoreResults) fetchBatch();
+    });
   };
   window.addEventListener('scroll', onScroll, { passive: true });
-  document.addEventListener('scroll', onScroll, { passive: true });
 
   // IntersectionObserver sentinel (more reliable on Android WebView)
   if ('IntersectionObserver' in window) {
@@ -908,6 +1542,7 @@ function setupInfiniteScroll() {
     } catch {}
     try {
       state._io = new IntersectionObserver((entries)=>{
+        if (window.SBOverlay?.isOpen()) return;
         for (const en of entries) {
           if (en.isIntersecting && !state.loading && !state.noMoreResults) {
             fetchBatch();
@@ -922,10 +1557,16 @@ function setupInfiniteScroll() {
 // ---------- Events: config + instant favorites + account ----------
 (function subscribeConfigEvents() {
   window.events?.onConfigChanged?.(async (cfg) => {
-    if (cfg && typeof cfg === 'object') {
-      saveViewCache();
-      state.config = cfg || { sites: [] };
-      state.searchOrder = (state.config.sites || []).map((s)=> siteKey(s));
+    if (!cfg || typeof cfg !== 'object') return;
+    const sitesChanged = JSON.stringify(cfg.sites || []) !== JSON.stringify(state.config?.sites || []);
+    state.config = cfg;
+    state.nameTemplate = typeof cfg.nameTemplate === 'string' && cfg.nameTemplate.trim() ? cfg.nameTemplate.trim() : null;
+    state.settings = { ...DEFAULT_SETTINGS, ...(cfg.settings || {}) };
+    applySettings();
+    renderSourceChips();
+    if (sitesChanged) {
+      state.searchOrder = enabledSites().map((s)=> siteKey(s));
+      for (const k of Object.keys(state.viewCache)) invalidateViewCache(k);
       clearFeed(); scrollToTop(); fetchBatch();
     }
   });
@@ -955,56 +1596,86 @@ function setupInfiniteScroll() {
   });
 })();
 
-// ---------- Local favorites with fallback ----------
-window.isLocalFavorite = (post) => (window.__localFavsSet || new Set()).has(itemKey(post));
-
-function localFavToggleFallback(post) {
-  const KEY_KEYS = 'sb_local_favs_keys_v1';
-  const KEY_POSTS = 'sb_local_favs_posts_v1';
-  const key = itemKey(post);
-  const loadKeys = () => { try { return new Set(JSON.parse(localStorage.getItem(KEY_KEYS) || '[]')); } catch { return new Set(); } };
-  const saveKeys = (set) => { try { localStorage.setItem(KEY_KEYS, JSON.stringify([...set])); } catch {} };
-  const loadMap = () => { try { return new Map(Object.entries(JSON.parse(localStorage.getItem(KEY_POSTS) || '{}'))); } catch { return new Map(); } };
-  const saveMap = (map) => { try { localStorage.setItem(KEY_POSTS, JSON.stringify(Object.fromEntries(map))); } catch {} };
-
-  const keys = loadKeys();
-  const map = loadMap();
-  let favorited;
-  if (keys.has(key)) {
-    keys.delete(key);
-    map.delete(key);
-    favorited = false;
-  } else {
-    keys.add(key);
-    map.set(key, JSON.stringify({ ...post, _added_at: Date.now() }));
-    favorited = true;
-  }
-  saveKeys(keys);
-  saveMap(map);
-  return { ok: true, favorited, key };
+// ---------- source-site favouriting (danbooru/moebooru/e621 with creds) ----------
+function siteConfigForPost(post) {
+  const target = normalizeBaseUrl(post?.site?.baseUrl || '');
+  const type = post?.site?.type || '';
+  if (!target || !type) return null;
+  return configuredSites().find((s) => s.type === type && normalizeBaseUrl(s.baseUrl) === target) || null;
 }
+
+// Configured site with credentials that allow faving upstream, or null
+function sourceFaveSite(post) {
+  if (typeof window.api?.favoritePost !== 'function') return null;
+  // the favourite-capable adapters live in the Electron main process
+  if (!window.Platform?.isElectron?.()) return null;
+  const site = siteConfigForPost(post);
+  if (!site) return null;
+  const c = site.credentials || {};
+  if (site.type === 'danbooru' && c.login && c.api_key) return site;
+  if (site.type === 'moebooru' && c.login && c.password_hash) return site;
+  if (site.type === 'e621' && c.login && c.api_key) return site;
+  return null;
+}
+
+async function syncFaveToSource(post, favorited) {
+  const site = sourceFaveSite(post);
+  if (!site) return;
+  const label = site.name || site.type;
+  try {
+    const res = await window.api.favoritePost({ site, postId: post.id, action: favorited ? 'add' : 'remove' });
+    if (!res?.ok) throw new Error(res?.error || 'unknown error');
+    post.user_favorited = favorited;
+    refreshSbFaveCount(post);
+  } catch (e) {
+    if (favorited) {
+      notifyError(`Faved locally, but ${label} rejected the favourite: ${e?.message || e}`);
+    } else {
+      // Removing a fave that never existed on the site is expected noise
+      console.warn(`[source-fave] remove on ${label} failed:`, e?.message || e);
+    }
+  }
+}
+
+window.hasRemoteFavoriteSupport = (post) => !!sourceFaveSite(post);
+window.toggleRemoteFavorite = async (post) => {
+  const site = sourceFaveSite(post);
+  if (!site) return { ok: false, error: 'No source-site credentials configured' };
+  const currently = !!(post.user_favorited || post._remote_favorited);
+  try {
+    const res = await window.api.favoritePost({ site, postId: post.id, action: currently ? 'remove' : 'add' });
+    if (!res?.ok) return { ok: false, error: res?.error || 'failed' };
+    post.user_favorited = !currently;
+    post._remote_favorited = !currently;
+    refreshSbFaveCount(post);
+    return { ok: true, favorited: !currently };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+};
+
+// ---------- Local favorites ----------
+window.isLocalFavorite = (post) => (window.__localFavsSet || new Set()).has(itemKey(post));
 
 window.toggleLocalFavorite = async (post) => {
   try {
-    let res;
-    if (typeof window.api?.toggleLocalFavorite === 'function') {
-      res = await window.api.toggleLocalFavorite(post);
-    } else {
-      res = localFavToggleFallback(post);
-    }
+    const res = await window.api.toggleLocalFavorite(post);
     window.__localFavsSet = window.__localFavsSet || new Set(await (window.api?.getLocalFavoriteKeys?.() || []));
     const key = res?.key || itemKey(post);
     if (res?.ok) {
       if (res.favorited) window.__localFavsSet.add(key);
       else window.__localFavsSet.delete(key);
+      syncFaveToSource(post, !!res.favorited);
+      // let the remote push land before re-asking for the count
+      setTimeout(() => refreshSbFaveCount(post), 1500);
       if (state.viewType === 'faves') { clearFeed(); scrollToTop(); await fetchBatch(); }
     } else {
-      alert(`Save failed: ${res?.error || 'unknown error'}`);
+      notifyError(`Fave failed: ${res?.error || 'unknown error'}`);
     }
     return res;
   } catch (e) {
     console.error('toggleLocalFavorite error:', e);
-    alert(`Save failed: ${e?.message || e}`);
+    notifyError(`Fave failed: ${e?.message || e}`);
     return { ok: false, error: String(e?.message || e) };
   }
 };
@@ -1017,10 +1688,10 @@ async function init() {
   setupSearch();
   setupFeedHeader();
   setupManageSites();
+  setupSettings();
   setupInfiniteScroll();
-
-  // Safe optional download wiring (prevents init crash)
-  safeSetupDownloadAll();
+  setupDownloadAll();
+  renderSourceChips();
 
   setActiveTab();
 

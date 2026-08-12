@@ -1,13 +1,34 @@
-const { app, BrowserWindow, ipcMain, net, Menu, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, net, Menu, shell, dialog, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const http = require('http');
+const crypto = require('crypto');
 const { createNetworkClient } = require('./network');
 
 /* dev */
 const isDev = process.env.SB_DEV === '1';
 const isSmokeTest = process.env.SB_SMOKE_TEST === '1';
 if (isSmokeTest && process.env.SB_SMOKE_USER_DATA) app.setPath('userData', process.env.SB_SMOKE_USER_DATA);
+
+// XDG compliance on Linux: keep only durable config in ~/.config and push all
+// Electron/Chromium data (caches, cookies, web storage, crash dumps) to ~/.cache
+// by making userData the cache dir. CONFIG_DIR holds our JSON on every platform.
+let CONFIG_DIR;
+if (process.platform === 'linux' && !isSmokeTest) {
+  const xdgDir = (envVar, fallback) => path.join(process.env[envVar] || path.join(os.homedir(), fallback), app.getName());
+  CONFIG_DIR = xdgDir('XDG_CONFIG_HOME', '.config');
+  try { app.setPath('userData', xdgDir('XDG_CACHE_HOME', '.cache')); } catch {}
+  try { fs.mkdirSync(CONFIG_DIR, { recursive: true }); } catch {}
+  // Prune cache/crash dirs older builds wrote into the config dir.
+  try {
+    for (const dir of ['Cache', 'Code Cache', 'GPUCache', 'DawnCache', 'DawnGraphiteCache', 'DawnWebGPUCache', 'ShaderCache', 'GrShaderCache', 'Crashpad', 'blob_storage', 'Local Storage', 'Cookies', 'Cookies-journal', 'Network', 'Shared Dictionary']) {
+      fs.promises.rm(path.join(CONFIG_DIR, dir), { recursive: true, force: true }).catch(() => {});
+    }
+  } catch {}
+} else {
+  CONFIG_DIR = app.getPath('userData');
+}
 
 /* constants */
 const DEFAULT_SERVER = 'https://streambooru.ecchibooru.uk';
@@ -91,15 +112,66 @@ function setupHotlinkHeaders(sess) {
   }
 }
 
+/* window state persistence */
+const WINDOW_STATE_PATH = () => path.join(CONFIG_DIR, 'window-state.json');
+function readWindowState() {
+  try { return JSON.parse(fs.readFileSync(WINDOW_STATE_PATH(), 'utf-8')); } catch { return null; }
+}
+function sanitizeWindowState(state) {
+  const fallback = { width: 1200, height: 800, x: undefined, y: undefined, maximized: false };
+  if (!state || !Number.isFinite(state.width) || !Number.isFinite(state.height)) return fallback;
+  const width = Math.max(640, Math.round(state.width));
+  const height = Math.max(480, Math.round(state.height));
+  let { x, y } = state;
+  if (Number.isFinite(x) && Number.isFinite(y)) {
+    // drop the saved position if its display is gone
+    const visible = screen.getAllDisplays().some((d) => {
+      const a = d.workArea;
+      return x < a.x + a.width - 40 && x + width > a.x + 40 && y >= a.y - 8 && y < a.y + a.height - 40;
+    });
+    if (!visible) { x = undefined; y = undefined; }
+  } else {
+    x = undefined; y = undefined;
+  }
+  return { width, height, x, y, maximized: !!state.maximized };
+}
+function attachWindowStatePersistence(window) {
+  let timer = null;
+  const persist = () => {
+    try {
+      const state = { ...window.getNormalBounds(), maximized: window.isMaximized() };
+      fs.writeFileSync(WINDOW_STATE_PATH(), JSON.stringify(state), 'utf-8');
+    } catch {}
+  };
+  const debounced = () => { clearTimeout(timer); timer = setTimeout(persist, 400); };
+  window.on('resize', debounced);
+  window.on('move', debounced);
+  window.on('close', () => { clearTimeout(timer); persist(); });
+}
+
 /* window */
 function createWindow() {
+  const state = sanitizeWindowState(readWindowState());
   win = new BrowserWindow({
-    width: 1200, height: 800, title: 'StreamBooru', autoHideMenuBar: true, show: !isSmokeTest,
+    width: state.width, height: state.height, x: state.x, y: state.y,
+    title: 'StreamBooru', autoHideMenuBar: true, show: !isSmokeTest,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true }
   });
+  if (state.maximized && !isSmokeTest) win.maximize();
+  attachWindowStatePersistence(win);
   Menu.setApplicationMenu(null);
   win.setMenuBarVisibility(false);
   setupHotlinkHeaders(win.webContents.session);
+
+  // Keep the privileged preload bridge off any remote origin: open external
+  // links in the OS browser and refuse in-app navigation away from the bundle.
+  const isInternalUrl = (target) => { try { return new URL(target).protocol === 'file:'; } catch { return false; } };
+  win.webContents.setWindowOpenHandler(({ url }) => { openSafeExternal(url); return { action: 'deny' }; });
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!isInternalUrl(url)) { event.preventDefault(); openSafeExternal(url); }
+  });
+  win.webContents.on('will-redirect', (event, url) => { if (!isInternalUrl(url)) event.preventDefault(); });
+
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
   if (isSmokeTest) {
@@ -132,7 +204,7 @@ app.whenReady().then(async () => {
     const acc = readAccount();
     if (acc?.token) {
       openEventStream();
-      console.log('[SSE] startup: pulling favourites once…');
+      if (isDev) console.log('[SSE] startup: pulling favourites once…');
       await pullFavoritesMerge().catch(()=>{});
     }
   } catch {}
@@ -142,9 +214,9 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
 /* paths */
-const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json');
-const FAVORITES_PATH = path.join(app.getPath('userData'), 'favorites.json');
-const ACCOUNT_PATH = path.join(app.getPath('userData'), 'account.json');
+const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
+const FAVORITES_PATH = path.join(CONFIG_DIR, 'favorites.json');
+const ACCOUNT_PATH = path.join(CONFIG_DIR, 'account.json');
 
 /* config */
 function readConfig() {
@@ -166,6 +238,19 @@ function writeConfig(cfg) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
   try { win?.webContents?.send?.('config:changed', cfg); } catch {}
 }
+/* Swap in remotely-synced sites without clobbering settings/nameTemplate.
+   Older servers don't send `enabled`; fall back to the local flag then. */
+function configWithSyncedSites(remoteSites) {
+  const cfg = readConfig();
+  const keyOf = (s) => `${(s?.type || '').toLowerCase()}|${normalizeBaseUrl(s?.baseUrl || s?.base_url || '')}`;
+  const localByKey = new Map((cfg.sites || []).map((s) => [keyOf(s), s]));
+  const sites = (Array.isArray(remoteSites) ? remoteSites : []).map((s) => {
+    if (typeof s?.enabled === 'boolean') return s;
+    const local = localByKey.get(keyOf(s));
+    return local && local.enabled === false ? { ...s, enabled: false } : s;
+  });
+  return { ...cfg, sites };
+}
 
 /* favorites */
 function favKey(post) { return `${post?.site?.baseUrl || ''}#${post?.id}`; }
@@ -186,8 +271,8 @@ function removeLocalFavoriteKey(key) {
 const adapters = {
   danbooru: new Danbooru(httpGetJson, httpPostForm, httpDelete),
   moebooru: new Moebooru(httpGetJson, httpPostForm),
-  gelbooru: new Gelbooru(httpGetJson, (u,h)=>new Promise((resolve,reject)=>{const r=net.request({url:u,method:'GET'});applyDefaultHeaders(r,u,h||{});let d='';r.on('response',(res)=>{res.on('data',(c)=>d+=c);res.on('end',()=>{try{resolve(JSON.parse(d))}catch{resolve([])}})});r.on('error',reject);r.end();})),
-  e621: new E621(httpGetJson),
+  gelbooru: new Gelbooru(httpGetJson, (u,h)=>new Promise((resolve,reject)=>{const r=net.request({url:u,method:'GET'});applyDefaultHeaders(r,u,h||{});let d='';r.on('response',(res)=>{res.on('data',(c)=>d+=c);res.on('end',()=>resolve(d))});r.on('error',reject);r.end();})),
+  e621: new E621(httpGetJson, httpPostForm, httpDelete),
   derpibooru: new Derpibooru(httpGetJson)
 };
 
@@ -213,7 +298,7 @@ function closeEventStream() { try { esReq?.abort?.(); } catch {} esReq = null; }
 function scheduleReconnect(oldReq) {
   setTimeout(() => {
     if (esReq === oldReq) {
-      console.log('[SSE] reconnecting…');
+      if (isDev) console.log('[SSE] reconnecting…');
       openEventStream();
     }
   }, 3000);
@@ -224,15 +309,15 @@ async function openEventStream() {
   const acc = readAccount();
   if (!acc.serverBase || !acc.token) return;
   const url = `${acc.serverBase.replace(/\/+$/,'')}/api/stream`;
-  console.log('[SSE] connecting', url);
+  if (isDev) console.log('[SSE] connecting', url);
   const req = net.request({ url, method: 'GET' });
   esReq = req;
   applyDefaultHeaders(req, url, { Accept: 'text/event-stream', Authorization: `Bearer ${acc.token}` });
   let buf = '';
   req.on('response', (res) => {
-    console.log('[SSE] connected (status', res.statusCode, ')');
-    res.on('end', () => { console.log('[SSE] ended'); scheduleReconnect(req); });
-    res.on('aborted', () => { console.log('[SSE] aborted'); scheduleReconnect(req); });
+    if (isDev) console.log('[SSE] connected (status', res.statusCode, ')');
+    res.on('end', () => { if (isDev) console.log('[SSE] ended'); scheduleReconnect(req); });
+    res.on('aborted', () => { if (isDev) console.log('[SSE] aborted'); scheduleReconnect(req); });
     res.on('data', async (chunk) => {
       buf += chunk.toString('utf8');
       const parts = buf.split(/\n\n/);
@@ -245,7 +330,7 @@ async function openEventStream() {
           else if (ln.startsWith('data:')) data += ln.slice(5).trim();
         }
         if (ev === 'ping' || ev === 'hello') continue;
-        console.log('[SSE] event', ev);
+        if (isDev) console.log('[SSE] event', ev);
         if (ev === 'fav_changed') {
           try {
             let payload = null;
@@ -258,7 +343,7 @@ async function openEventStream() {
           } catch {}
         }
         if (ev === 'sites_changed') {
-          try { const remote = await sitesRemoteGet(); writeConfig({ sites: remote || [] }); } catch {}
+          try { const remote = await sitesRemoteGet(); writeConfig(configWithSyncedSites(remote)); } catch {}
         }
       }
     });
@@ -289,13 +374,25 @@ async function pullFavoritesMerge() {
   const j = await httpGetJson(url, { Authorization: `Bearer ${acc.token}` });
   const remote = Array.isArray(j?.items) ? j.items : [];
 
-  const next = [];
+  const merged = new Map();
   for (const it of remote) {
     if (!it || !it.key || !it.post) continue;
-    next.push({ key: String(it.key), added_at: Number(it.added_at) || Date.now(), post: it.post });
+    merged.set(String(it.key), { key: String(it.key), added_at: Number(it.added_at) || Date.now(), post: it.post });
   }
+  // keep faves saved while offline/logged out and push them back up
+  const localOnly = loadFavorites().filter((it) => it?.key && it?.post && !merged.has(it.key));
+  for (const it of localOnly) merged.set(it.key, it);
+  const next = [...merged.values()];
   saveFavorites(next);
-  return { ok: true, count: next.length };
+  if (localOnly.length) {
+    try {
+      const pushUrl = `${acc.serverBase.replace(/\/+$/,'')}/api/favourites/bulk_upsert`;
+      await httpPostJson(pushUrl, { items: localOnly }, { Authorization: `Bearer ${acc.token}` });
+    } catch (e) {
+      console.warn('[sync] failed to push local-only favourites', String(e?.message || e));
+    }
+  }
+  return { ok: true, count: next.length, pushed: localOnly.length };
 }
 
 function normalizeBaseUrl(u) {
@@ -326,6 +423,7 @@ async function sitesRemotePut(sites) {
       tags: String(s.tags || ''),
       queryDialect: String(s.queryDialect || s.query_dialect || 'auto'),
       order_index: Number(s.order_index ?? idx) || idx,
+      enabled: s.enabled !== false,
       credentials: {}
     };
     // Preserve known credential keys per site type
@@ -357,7 +455,7 @@ async function onLoginUnion() {
   for (const s of remoteSites) map.set(key(s), s);
   for (const s of localSites) if (!map.has(key(s))) map.set(key(s), s);
   const union = Array.from(map.values()).map((s, idx)=>({ ...s, order_index: idx }));
-  writeConfig({ sites: union });
+  writeConfig(configWithSyncedSites(union));
   await sitesRemotePut(union).catch(()=>{});
   openEventStream();
 }
@@ -393,37 +491,74 @@ ipcMain.handle('booru:fetch', async (_evt, payload) => {
   }
 });
 
+/* IPC: tag autocomplete */
+ipcMain.handle('booru:autocomplete', async (_evt, payload) => {
+  const { site, prefix = '', limit = 10 } = payload || {};
+  try {
+    if (!site || !site.type || !adapters[site.type]) return { ok: false, suggestions: [] };
+    const adapter = adapters[site.type];
+    if (typeof adapter.autocomplete !== 'function') return { ok: true, suggestions: [] };
+    const suggestions = await adapter.autocomplete(site, prefix, { limit });
+    return { ok: true, suggestions: Array.isArray(suggestions) ? suggestions : [] };
+  } catch (e) {
+    return { ok: false, suggestions: [], error: String(e?.message || e) };
+  }
+});
+
 /* IPC: external */
 ipcMain.handle('openExternal', async (_evt, url) => openSafeExternal(url));
 
 /* IPC: images */
+// Collapse control chars, path separators, and bare dot segments so a crafted
+// siteName/fileName can't escape the chosen folder via `..`.
+function sanitizePathSegment(s) {
+  const v = String(s || '').replace(/[<>:"/\\|?*\x00-\x1F]+/g, '_').replace(/^\.+$/, '_').slice(0, 200);
+  return v || '_';
+}
 ipcMain.handle('download:image', async (_evt, payload) => {
   const { url, siteName = 'unknown', fileName = '' } = payload || {};
   if (!url) return { ok: false, error: 'No URL' };
   const defaultDir = app.getPath('downloads');
-  const suggested = path.join(defaultDir, 'StreamBooru', siteName.replace(/[^\w.-]+/g, '_'), fileName || path.basename(new URL(url).pathname));
-  const savePath = dialog.showSaveDialogSync(win, { title: 'Save Image', defaultPath: suggested });
-  if (!savePath) return { ok: false, cancelled: true };
+  const name = sanitizePathSegment(fileName || path.basename(new URL(url).pathname));
+  const suggested = path.join(defaultDir, 'StreamBooru', sanitizePathSegment(siteName), name);
+  const result = await dialog.showSaveDialog(win, { title: 'Save Image', defaultPath: suggested });
+  if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
   try {
-    await downloadUrlToFile(url, savePath);
-    return { ok: true, path: savePath };
+    await downloadUrlToFile(url, result.filePath);
+    return { ok: true, path: result.filePath };
   } catch (error) {
     return { ok: false, error: String(error?.message || error) };
   }
 });
+let bulkJob = null;
 ipcMain.handle('download:bulk', async (_evt, payload) => {
   const { items = [], options = {} } = payload || {};
   if (!Array.isArray(items) || items.length === 0) return { ok: false, error: 'No items to download' };
-  const baseDir = dialog.showOpenDialogSync(win, { title: 'Choose folder to save images', properties: ['openDirectory', 'createDirectory'] });
-  if (!baseDir || !baseDir[0]) return { ok: false, cancelled: true };
-  const basePath = baseDir[0];
+  const picked = await dialog.showOpenDialog(win, { title: 'Choose folder to save images', properties: ['openDirectory', 'createDirectory'] });
+  if (picked.canceled || !picked.filePaths?.[0]) return { ok: false, cancelled: true };
+  const basePath = picked.filePaths[0];
   await fs.promises.mkdir(basePath, { recursive: true });
-  const sanitize = (s) => String(s || '').replace(/[<>:"/\\|?*\x00-\x1F]+/g, '_').slice(0, 200);
+  const sanitize = sanitizePathSegment;
   const subfolder = !!options.subfolderBySite;
   const concurrency = Number(options.concurrency || 3);
+
+  const job = { cancelled: false };
+  bulkJob = job;
+  const total = items.length;
+  let done = 0;
+  const sendProgress = () => {
+    try {
+      const saved = results.filter((r) => r.ok).length;
+      win?.webContents?.send?.('download:progress', {
+        done, total, saved, failed: results.length - saved, cancelled: job.cancelled
+      });
+    } catch {}
+  };
+
   let index = 0; const results = [];
   const worker = async () => {
     while (true) {
+      if (job.cancelled) return;
       const i = index++; if (i >= items.length) return;
       const it = items[i]; try {
         const u = new URL(it.url);
@@ -434,17 +569,42 @@ ipcMain.handle('download:bulk', async (_evt, payload) => {
         await downloadUrlToFile(it.url, outPath);
         results.push({ i, ok: true, path: outPath });
       } catch (e) { results.push({ i, ok: false, error: String(e?.message || e) }); }
+      done++;
+      sendProgress();
     }
   };
+  sendProgress();
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  if (bulkJob === job) bulkJob = null;
   const saved = results.filter(r => r.ok).length;
   const failed = results.filter(r => !r.ok);
-  return { ok: true, saved, failed, basePath };
+  return { ok: true, saved, failed, basePath, cancelled: job.cancelled, remaining: total - done };
+});
+ipcMain.handle('download:bulkCancel', async () => {
+  if (bulkJob) { bulkJob.cancelled = true; return { ok: true }; }
+  return { ok: false };
 });
 
 /* IPC: image proxy */
+// Block loopback/private/link-local targets so a proxy fetch can't reach the
+// local machine or intranet (SSRF); public booru hosts are unaffected.
+function isBlockedProxyTarget(rawUrl) {
+  let u;
+  try { u = new URL(rawUrl); } catch { return true; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return true;
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.localhost') || host === '0.0.0.0' || host === '::1' || host === '::') return true;
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    if (a === 127 || a === 10 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) return true;
+  }
+  if (/^(fe80:|fc|fd)/.test(host)) return true; // IPv6 link-local / unique-local
+  return false;
+}
 ipcMain.handle('image:proxy', async (_evt, { url }) => {
   if (!url) return { ok: false, error: 'No URL' };
+  if (isBlockedProxyTarget(url)) return { ok: false, error: 'blocked target' };
   return await new Promise((resolve) => {
     try {
       const req = net.request({ url, method: 'GET' });
@@ -533,7 +693,22 @@ ipcMain.handle('favorites:toggle', async (_evt, { post }) => {
   setImmediate(() => pushFavoriteRemote(key, post, now));
   return { ok: true, favorited: true, key, added_at: now };
 });
-ipcMain.handle('favorites:clear', async () => { saveFavorites([]); return { ok: true }; });
+ipcMain.handle('favorites:counts', async (_evt, payload) => {
+  try {
+    const keys = (Array.isArray(payload?.keys) ? payload.keys : [])
+      .filter((k) => typeof k === 'string' && k)
+      .slice(0, 200);
+    if (keys.length === 0) return { ok: true, counts: {} };
+    const acc = readAccount();
+    const base = (acc.serverBase || DEFAULT_SERVER).replace(/\/+$/, '');
+    if (!base) return { ok: false, counts: {} };
+    const { status, json } = await httpPostJson(`${base}/api/favourites/counts`, { keys });
+    if (status < 400 && json?.ok) return { ok: true, counts: json.counts || {} };
+    return { ok: false, counts: {} };
+  } catch (e) {
+    return { ok: false, counts: {}, error: String(e?.message || e) };
+  }
+});
 
 /* IPC: account + sync */
 ipcMain.handle('account:get', async () => {
@@ -572,10 +747,15 @@ ipcMain.handle('account:loginDiscord', async () => {
   const acc = readAccount(); const base = (acc.serverBase || '').replace(/\/+$/,'');
   if (!base) return { ok: false, error: 'No server' };
 
+  // Nonce ties the callback to this login attempt so another local process
+  // can't inject an attacker token into the loopback listener.
+  const stateNonce = crypto.randomBytes(16).toString('hex');
   const srv = http.createServer((req, res) => {
     try {
+      // A legitimate browser redirect is a top-level GET with no Origin header.
+      if (req.headers.origin) { res.statusCode = 403; res.end('Forbidden'); return; }
       const u = new URL(req.url, `http://${req.headers.host}`);
-      if (u.pathname === '/callback') {
+      if (u.pathname === '/callback' && u.searchParams.get('state') === stateNonce) {
         const token = u.searchParams.get('token') || '';
         if (token) {
           const a = readAccount(); a.token = token; writeAccount(a);
@@ -589,7 +769,7 @@ ipcMain.handle('account:loginDiscord', async () => {
 
   await new Promise((resolve, reject) => { srv.listen(0, '127.0.0.1', resolve); srv.on('error', reject); });
   const port = srv.address().port;
-  const redirect = `http://127.0.0.1:${port}/callback`;
+  const redirect = `http://127.0.0.1:${port}/callback?state=${stateNonce}`;
   if (!await openSafeExternal(`${base}/auth/discord?redirect_uri=${encodeURIComponent(redirect)}`)) {
     try { srv.close(); } catch {}
     return { ok: false, error: 'Invalid authentication server URL' };
@@ -613,10 +793,12 @@ ipcMain.handle('account:linkDiscord', async () => {
     const acc = readAccount();
     if (!acc.serverBase || !acc.token) return { ok: false, error: 'Not logged in' };
     const base = (acc.serverBase || '').replace(/\/+$/,'');
+    const stateNonce = crypto.randomBytes(16).toString('hex');
     const srv = http.createServer((req, res) => {
       try {
+        if (req.headers.origin) { res.statusCode = 403; res.end('Forbidden'); return; }
         const u = new URL(req.url, `http://${req.headers.host}`);
-        if (u.pathname === '/callback') {
+        if (u.pathname === '/callback' && u.searchParams.get('state') === stateNonce) {
           const linked = u.searchParams.get('linked') === '1';
           res.statusCode = 200;
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -631,7 +813,7 @@ ipcMain.handle('account:linkDiscord', async () => {
 
     await new Promise((resolve, reject) => { srv.listen(0, '127.0.0.1', resolve); srv.on('error', reject); });
     const port = srv.address().port;
-    const next = `http://127.0.0.1:${port}/callback`;
+    const next = `http://127.0.0.1:${port}/callback?state=${stateNonce}`;
 
     const startUrl = `${base}/api/link/discord/start?next=${encodeURIComponent(next)}`;
     const linkStart = await new Promise((resolve) => {
@@ -672,6 +854,23 @@ ipcMain.handle('account:logout', async () => {
   writeAccount({ serverBase: acc.serverBase || DEFAULT_SERVER, token: '', user: null });
   return { ok: true };
 });
+ipcMain.handle('account:unlinkDiscord', async () => {
+  try {
+    const acc = readAccount();
+    const base = (acc.serverBase || '').replace(/\/+$/, '');
+    if (!base || !acc.token) return { ok: false, error: 'Not logged in' };
+    const r = await httpPostJson(`${base}/auth/discord/unlink`, {}, { Authorization: `Bearer ${acc.token}` });
+    if ((r.status || 0) >= 400) return { ok: false, error: r?.json?.error || 'Unlink failed' };
+    try {
+      const me = await httpGetJson(`${base}/api/me`, { Authorization: `Bearer ${acc.token}` });
+      if (me?.ok) { acc.user = me.user || null; writeAccount(acc); }
+    } catch {}
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+});
+
+/* IPC: app info */
+ipcMain.handle('app:getVersion', () => app.getVersion());
 
 /* IPC: sync helpers */
 ipcMain.handle('sync:onLogin', async () => { await onLoginUnion(); return { ok: true }; });

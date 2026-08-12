@@ -2,8 +2,10 @@ const { normalizePost, abs, isVideoUrl } = require('./base');
 
 // e621/e926 adapter
 class E621Adapter {
-  constructor(httpGetJson) {
+  constructor(httpGetJson, httpPostForm, httpDelete) {
     this.httpGetJson = httpGetJson;
+    this.httpPostForm = httpPostForm;
+    this.httpDelete = httpDelete;
   }
 
   #buildTags(site, extra = '') {
@@ -51,6 +53,9 @@ class E621Adapter {
       width: file.width || null,
       height: file.height || null,
       tags: tagList,
+      artist: Array.isArray(tagsObj.artist) ? tagsObj.artist : [],
+      copyright: Array.isArray(tagsObj.copyright) ? tagsObj.copyright : [],
+      character: Array.isArray(tagsObj.character) ? tagsObj.character : [],
       rating: p.rating || '',
       source: src,
       post_url: `${base}/posts/${p.id}`,
@@ -98,6 +103,39 @@ class E621Adapter {
     const visible = posts.filter((p) => this.#isVisible(p));
     const normalized = visible.map((p) => this.#norm(site, p));
     return { posts: normalized, nextCursor: { page: page + 1 } };
+  }
+
+  async favorite(site, postId, action = 'add') {
+    const login = String(site?.credentials?.login || '').trim();
+    const apiKey = String(site?.credentials?.api_key || '').trim();
+    if (!login || !apiKey) throw new Error('e621 favourites require login + API key.');
+    if (typeof this.httpPostForm !== 'function' || typeof this.httpDelete !== 'function') {
+      throw new Error('Favourites are not supported in this client.');
+    }
+    const base = (site.baseUrl || '').replace(/\/+$/, '');
+    const cred = `login=${encodeURIComponent(login)}&api_key=${encodeURIComponent(apiKey)}`;
+    if (action === 'remove') {
+      return await this.httpDelete(`${base}/favorites/${encodeURIComponent(postId)}.json?${cred}`);
+    }
+    return await this.httpPostForm(`${base}/favorites.json?${cred}`, { post_id: String(postId) });
+  }
+
+  async autocomplete(site, prefix, { limit = 10 } = {}) {
+    const q = String(prefix || '').trim();
+    if (q.length < 3) return []; // e621 requires at least 3 characters
+    const base = (site.baseUrl || '').replace(/\/+$/, '');
+    const params = new URLSearchParams();
+    params.set('search[name_matches]', q);
+    params.set('limit', String(Math.min(limit, 20)));
+    const res = await this.httpGetJson(`${base}/tags/autocomplete.json?${params.toString()}`, { Accept: 'application/json' });
+    return (Array.isArray(res) ? res : [])
+      .filter((t) => t && t.name)
+      .map((t) => ({
+        value: String(t.name),
+        label: String(t.name),
+        count: Number(t.post_count) || 0,
+        category: String(t.category ?? '')
+      }));
   }
 }
 

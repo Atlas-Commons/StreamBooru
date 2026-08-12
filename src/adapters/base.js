@@ -62,11 +62,18 @@ function buildQueryTags(site, ...extras) {
   return out.join(' ');
 }
 
+function toTagArray(value) {
+  if (Array.isArray(value)) return value.filter(Boolean).map(String);
+  if (typeof value === 'string') return value.split(/\s+/).filter(Boolean);
+  return [];
+}
+
 function normalizePost({
   id, created_at, score, favorites,
   preview_url, sample_url, file_url,
   width, height, tags, rating, source, post_url, site,
-  grid_video_url, is_video
+  grid_video_url, is_video, user_favorited,
+  artist, copyright, character
 }) {
   const staticPreview = pickStaticImageUrl(preview_url, sample_url, file_url);
   const sample = sample_url || file_url || '';
@@ -81,14 +88,18 @@ function normalizePost({
     file_url: file,
     width: width ? Number(width) : null,
     height: height ? Number(height) : null,
-    tags: Array.isArray(tags) ? tags : typeof tags === 'string' ? tags.split(/\s+/).filter(Boolean) : [],
+    tags: toTagArray(tags),
+    artist: toTagArray(artist),
+    copyright: toTagArray(copyright),
+    character: toTagArray(character),
     rating: rating || '',
     source: source || '',
     post_url,
     site,
     grid_video_url: grid_video_url || '',
-    is_video: !!is_video
+    is_video: !!is_video,
+    user_favorited: !!user_favorited
   };
 }
 
-module.exports = { normalizePost, toIsoDate, abs, buildQueryTags, ratingToTag, isVideoUrl, pickStaticImageUrl };
+module.exports = { normalizePost, toIsoDate, abs, buildQueryTags, ratingToTag, isVideoUrl, pickStaticImageUrl, toTagArray };

@@ -2,6 +2,8 @@
 (function () {
   function qs(id) { return document.getElementById(id); }
 
+  let releaseOverlay = null;
+
   function openMenu() {
     const panel = qs('menu-panel');
     const backdrop = qs('menu-backdrop');
@@ -10,6 +12,9 @@
     panel.hidden = false;
     backdrop.hidden = false;
     toggle.setAttribute('aria-expanded', 'true');
+    if (!releaseOverlay) {
+      releaseOverlay = window.SBOverlay?.open?.('mobile-menu', { close: closeMenu, root: panel, trapFocus: false }) || null;
+    }
     const search = qs('mnu-tag-search');
     if (search) search.focus();
     else {
@@ -26,6 +31,8 @@
     panel.hidden = true;
     backdrop.hidden = true;
     toggle.setAttribute('aria-expanded', 'false');
+    releaseOverlay?.();
+    releaseOverlay = null;
   }
 
   function clickIf(el) { if (el) el.click(); }
@@ -33,10 +40,12 @@
   function setupForwarders() {
     const origDownload = qs('btn-download-all');
     const origManage = qs('btn-manage-sites');
+    const origSettings = qs('btn-settings');
     const origAccount = qs('btn-account');
 
     qs('mnu-download-all')?.addEventListener('click', () => { closeMenu(); clickIf(origDownload); });
     qs('mnu-manage-sites')?.addEventListener('click', () => { closeMenu(); clickIf(origManage); });
+    qs('mnu-settings')?.addEventListener('click', () => { closeMenu(); clickIf(origSettings); });
     qs('mnu-account')?.addEventListener('click', () => { closeMenu(); clickIf(origAccount); });
 
     const tNew = qs('tab-new');

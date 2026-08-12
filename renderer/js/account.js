@@ -1,4 +1,8 @@
 (function () {
+  const notify = (msg, opts) => { if (typeof window.toast === 'function') window.toast(msg, opts); else alert(msg); };
+  const notifyError = (msg) => notify(msg, { type: 'error' });
+  const notifySuccess = (msg) => notify(msg, { type: 'success' });
+
   // elements
   function h(tag, attrs = {}, children = []) {
     const el = document.createElement(tag);
@@ -130,7 +134,7 @@
 
     // manual sync
     const rowInfo = h('div', { className: 'actions-row' });
-    const btnPullFav = h('button', { className: 'link-btn', text: 'Pull favorites (manual)' });
+    const btnPullFav = h('button', { className: 'link-btn', text: 'Sync favourites (manual)' });
     rowInfo.appendChild(btnPullFav);
 
     card.appendChild(status);
@@ -156,6 +160,7 @@
 
     // account change event (Discord deep link returns, logout, etc.)
     let stopAccountWatch = null;
+    let releaseOverlay = null;
     const onAccountChanged = async () => { try { await refresh(); } catch {} };
 
     function close() {
@@ -166,10 +171,13 @@
       root.classList.add('hidden');
       root.setAttribute('aria-hidden', 'true');
       root.innerHTML = '';
+      releaseOverlay?.();
+      releaseOverlay = null;
     }
     closeBtn.addEventListener('click', close);
     document.addEventListener('keydown', escHandler, true);
     root.addEventListener('click', backdropHandler, true);
+    releaseOverlay = window.SBOverlay?.open?.('account', { close, root }) || null;
     window.events?.on?.('account_changed', onAccountChanged);
 
     // auto-persist server on change
@@ -257,11 +265,11 @@
         btnRegister.disabled = true;
         const u = regUser.value.trim();
         const p = regPass.value;
-        if (!u || !p) { alert('Enter username and password'); return; }
+        if (!u || !p) { notifyError('Enter username and password'); return; }
         await window.api.accountSetServer?.(serverSelect.value);
         const res = await window.api.accountRegister?.(u, p);
-        if (!res?.ok) alert('Register failed' + (res?.error ? `: ${res.error}` : ''));
-        else { await window.api.syncOnLogin?.(); alert('Account created and synced.'); }
+        if (!res?.ok) notifyError('Register failed' + (res?.error ? `: ${res.error}` : ''));
+        else { await window.api.syncOnLogin?.(); notifySuccess('Account created and synced.'); }
       } finally { btnRegister.disabled = false; await refresh(); }
     });
 
@@ -270,11 +278,11 @@
         btnLoginLocal.disabled = true;
         const u = userInput.value.trim();
         const p = passInput.value;
-        if (!u || !p) { alert('Enter username and password'); return; }
+        if (!u || !p) { notifyError('Enter username and password'); return; }
         await window.api.accountSetServer?.(serverSelect.value);
         const res = await window.api.accountLoginLocal?.(u, p);
-        if (!res?.ok) alert('Login failed' + (res?.error ? `: ${res.error}` : ''));
-        else { await window.api.syncOnLogin?.(); alert('Login complete. Synced.'); }
+        if (!res?.ok) notifyError('Login failed' + (res?.error ? `: ${res.error}` : ''));
+        else { await window.api.syncOnLogin?.(); notifySuccess('Login complete. Synced.'); }
       } finally { btnLoginLocal.disabled = false; await refresh(); }
     });
 
@@ -283,12 +291,12 @@
         btnLinkDiscord.disabled = true;
         const res = await window.api.accountLinkDiscord?.();
         if (!res?.ok) {
-          alert('Link start failed' + (res?.error ? `: ${res.error}` : ''));
+          notifyError('Link start failed' + (res?.error ? `: ${res.error}` : ''));
         } else {
           if (res.linked) {
-            alert('Discord account linked.');
+            notifySuccess('Discord account linked.');
           } else {
-            alert('Continue the Discord consent in your browser to complete linking.');
+            notify('Continue the Discord consent in your browser to complete linking.');
             try { if (typeof stopAccountWatch === 'function') stopAccountWatch(); } catch {}
             stopAccountWatch = startAccountWatch({ stopWhenLoggedIn: false, maxMs: 60000, intervalMs: 1500 });
           }
@@ -300,8 +308,8 @@
       try {
         btnUnlinkDiscord.disabled = true;
         const res = await window.api.accountUnlinkDiscord?.();
-        if (!res?.ok) alert('Unlink failed' + (res?.error ? `: ${res.error}` : ''));
-        else { alert('Discord unlinked.'); }
+        if (!res?.ok) notifyError('Unlink failed' + (res?.error ? `: ${res.error}` : ''));
+        else { notifySuccess('Discord unlinked.'); }
       } finally { btnUnlinkDiscord.disabled = false; await refresh(); }
     });
 
@@ -319,7 +327,7 @@
           : null;
         if (onWeb) {
           if (!res?.ok) {
-            alert('Login failed' + (res?.error ? `: ${res.error}` : ''));
+            notifyError('Login failed' + (res?.error ? `: ${res.error}` : ''));
             btnLoginDiscord.disabled = false;
             return;
           }
@@ -331,9 +339,9 @@
         (async () => {
           try {
             const asyncRes = await window.api.accountLoginDiscord?.();
-            if (!asyncRes?.ok) alert('Login failed' + (asyncRes?.error ? `: ${asyncRes.error}` : ''));
+            if (!asyncRes?.ok) notifyError('Login failed' + (asyncRes?.error ? `: ${asyncRes.error}` : ''));
             else {
-              alert('Follow the browser flow; you’ll return to the app automatically.');
+              notify('Follow the browser flow; you’ll return to the app automatically.');
               try { if (typeof stopAccountWatch === 'function') stopAccountWatch(); } catch {}
               stopAccountWatch = startAccountWatch({ stopWhenLoggedIn: true, maxMs: 60000, intervalMs: 1500 });
             }
@@ -343,33 +351,31 @@
           }
         })();
       } catch (err) {
-        alert('Login failed: ' + (err?.message || err));
+        notifyError('Login failed: ' + (err?.message || err));
         btnLoginDiscord.disabled = false;
       }
     });
 
     btnLogout.addEventListener('click', async () => {
       await window.api.accountLogout?.();
-      alert('Logged out');
+      notify('Logged out');
       await refresh();
     });
 
     btnPullFav.addEventListener('click', async () => {
       const res = await window.api.syncPullFavorites?.();
-      if (res?.ok) alert('Pulled favorites.');
-      else alert('Pull failed' + (res?.error ? `: ${res.error}` : ''));
+      if (res?.ok) notifySuccess(`Favourites synced.${res.pushed ? ` ${res.pushed} local fave${res.pushed === 1 ? '' : 's'} uploaded.` : ''}`);
+      else notifyError('Sync failed' + (res?.error ? `: ${res.error}` : ''));
     });
 
     await refresh();
     setTimeout(() => panel.focus(), 0);
   }
 
-  // hook
+  // hook (mnu-account is forwarded to btn-account by the mobile menu)
   function setupAccountButton() {
     const btn = document.getElementById('btn-account');
-    const mnu = document.getElementById('mnu-account');
     if (btn) btn.addEventListener('click', openAccountModal);
-    if (mnu) mnu.addEventListener('click', openAccountModal);
   }
 
   if (document.readyState === 'loading') {

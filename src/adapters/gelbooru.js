@@ -179,6 +179,61 @@ class GelbooruAdapter {
 
     return { posts: normalized, nextCursor: { pid: pid + 1 } };
   }
+
+  #parseXmlTags(xml) {
+    const out = [];
+    const re = /<tag\b([^>]+?)\/?>/gi;
+    let m;
+    while ((m = re.exec(xml))) {
+      const attrs = m[1];
+      const get = (name) => {
+        const mm = new RegExp(`\\b${name}="([^"]*)"`, 'i').exec(attrs);
+        return mm ? mm[1] : '';
+      };
+      const name = get('name');
+      if (!name) continue;
+      out.push({ name, count: Number(get('count') || '0'), type: get('type') });
+    }
+    return out;
+  }
+
+  async autocomplete(site, prefix, { limit = 10 } = {}) {
+    const q = String(prefix || '').trim();
+    if (!q) return [];
+    const apiBase = gelbooruApiBase(site.baseUrl.replace(/\/+$/, ''), site);
+    const params = new URLSearchParams();
+    params.set('page', 'dapi');
+    params.set('s', 'tag');
+    params.set('q', 'index');
+    params.set('json', '1');
+    params.set('limit', String(Math.min(limit, 20)));
+    params.set('name_pattern', `${q.replace(/%+/g, '')}%`);
+    params.set('orderby', 'count');
+    this.#applyAuth(params, site);
+    const url = `${apiBase}/index.php?${params.toString()}`;
+
+    let tags = [];
+    try {
+      const json = await this.httpGetJson(url);
+      tags = Array.isArray(json) ? json : (Array.isArray(json?.tag) ? json.tag : []);
+    } catch { tags = []; }
+    if (!tags.length) {
+      try {
+        const u = new URL(url);
+        u.searchParams.delete('json');
+        const xml = await this.httpGetText(u.toString(), { Accept: 'application/xml,text/xml;q=0.9,*/*;q=0.1' });
+        tags = this.#parseXmlTags(xml);
+      } catch { tags = []; }
+    }
+    return tags
+      .filter((t) => t && (t.name || t.tag))
+      .map((t) => ({
+        value: String(t.name || t.tag),
+        label: String(t.name || t.tag),
+        count: Number(t.count ?? t.post_count) || 0,
+        category: String(t.type ?? '')
+      }));
+  }
 }
 
 module.exports = GelbooruAdapter;
