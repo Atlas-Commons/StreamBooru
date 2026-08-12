@@ -21,6 +21,19 @@ linux:
     - tar.gz
   maintainer: "Atlas Commons <mrhowe95@gmail.com>"
   vendor: "StreamBooru Project"
+  # Wayland takes a window's icon from the desktop file matching its app_id rather than
+  # from the window itself, and Electron reports app_id "streambooru". Keep the desktop
+  # filename tied to that, and name the class outright for the compositors that match on
+  # it, or the launcher falls back to a generic icon.
+  syncDesktopName: true
+  # A lone 1024px source installs a lone 1024px icon, which panels and task switchers
+  # have to downscale on every draw. Ship the sizes an icon theme expects.
+  icon: build/icons
+  desktop:
+    entry:
+      Name: StreamBooru
+      StartupWMClass: streambooru
+      Keywords: booru;danbooru;gelbooru;e621;images;
 
 deb:
   depends:

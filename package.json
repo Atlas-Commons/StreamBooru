@@ -3,6 +3,7 @@
   "version": "1.2.0-beta.1",
   "description": "StreamBooru – Electron app to browse multiple booru sites with New and Popular feeds, merged across sources.",
   "main": "electron/main.js",
+  "desktopName": "streambooru.desktop",
   "author": {
     "name": "Atlas-Commons",
     "email": "mrhowe95@gmail.com"
