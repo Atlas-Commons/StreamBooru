@@ -1584,7 +1584,12 @@ function setupInfiniteScroll() {
     }
 
     if (state.viewType === 'faves') {
-      clearFeed(); scrollToTop(); await fetchBatch();
+      // The list has to be rebuilt, but the user may be a long way down it, so put them
+      // back where they were instead of at the top.
+      const y = window.scrollY || 0;
+      clearFeed();
+      await fetchBatch();
+      if (y) window.scrollTo(0, y);
     }
   });
 })();

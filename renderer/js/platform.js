@@ -714,9 +714,10 @@
 
   // Merge remote favourites with local ones; local-only faves get pushed up
   // rather than overwritten. Use British endpoints.
+  let lastPushedFavSig = '';
   async function syncReplaceFavorites() {
     const acc = accLoad(); const base = accGetBase(acc);
-    if (!base || !acc.token) return { ok: false, error: 'Not logged in' };
+    if (!base || !acc.token) { lastPushedFavSig = ''; return { ok: false, error: 'Not logged in' }; }
     const data = await httpGetJSON(`${base}/api/favourites`, { Authorization: `Bearer ${acc.token}` });
     const remote = Array.isArray(data?.items) ? data.items : [];
     const deletedAt = new Map();
@@ -746,16 +747,26 @@
       map.set(k, raw);
       if (post) extras.push({ key: k, added_at: addedAt || Date.now(), post });
     }
-    favSaveKeys(keys);
-    favSaveMap(map);
-    if (extras.length) {
+    // The server echoes our own writes back over SSE, so a sync that settled on the same
+    // set must not report a change — the feed would rebuild under the user every echo.
+    const changed = keys.size !== localKeys.size
+      || [...keys].some((k) => !localKeys.has(k) || localMap.get(k) !== map.get(k));
+    if (changed) {
+      favSaveKeys(keys);
+      favSaveMap(map);
+    }
+    // Anything the server declines to keep is still missing from the next pull, so
+    // re-pushing the same set only earns another echo and another sync.
+    const pushSig = extras.map((e) => e.key).sort().join('\n');
+    if (extras.length && pushSig !== lastPushedFavSig) {
       try {
         await httpPostJSON(`${base}/api/favourites/bulk_upsert`, { items: extras }, { Authorization: `Bearer ${acc.token}` });
+        lastPushedFavSig = pushSig;
       } catch (e) {
         console.warn('failed to push local-only favourites', e?.message || e);
       }
     }
-    return { ok: true, count: keys.size, pushed: extras.length };
+    return { ok: true, count: keys.size, pushed: extras.length, changed };
   }
 
   // Sites sync helpers
@@ -827,9 +838,9 @@
       if (favSyncInFlight) { favSyncNeedsRerun = true; return; }
       favSyncInFlight = true;
       try {
-        await syncReplaceFavorites();
+        const res = await syncReplaceFavorites();
         try { const keys = await favKeys(); window.__localFavsSet = new Set(keys || []); } catch {}
-        window.events?.emit?.('favorites_changed', { ok: true, source: 'sse' });
+        if (res?.changed) window.events?.emit?.('favorites_changed', { ok: true, source: 'sse' });
       } catch (e) {
         console.warn('SSE favourites sync error', e?.message || e);
       } finally {

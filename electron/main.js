@@ -273,7 +273,13 @@ function loadFavorites() {
   } catch { return []; }
 }
 function saveFavorites(arr) {
-  fs.writeFileSync(FAVORITES_PATH, JSON.stringify(arr, null, 2), 'utf-8');
+  const next = JSON.stringify(arr, null, 2);
+  let prev = null;
+  try { prev = fs.readFileSync(FAVORITES_PATH, 'utf-8'); } catch {}
+  // The server echoes our own writes back over SSE, and every echo pulls and saves
+  // again. Announcing a save that changed nothing rebuilds the feed under the user.
+  if (prev === next) return;
+  fs.writeFileSync(FAVORITES_PATH, next, 'utf-8');
   try { win?.webContents?.send?.('favorites:changed'); } catch {}
 }
 function removeLocalFavoriteKey(key) {
@@ -302,6 +308,7 @@ function readAccount() {
 function writeAccount(acc) {
   const base = acc?.serverBase || DEFAULT_SERVER;
   fs.writeFileSync(ACCOUNT_PATH, JSON.stringify({ serverBase: base, token: acc?.token || '', user: acc?.user || null }, null, 2), 'utf-8');
+  lastPushedFavSig = '';
   try { win?.webContents?.send?.('account:changed'); } catch {}
 }
 
@@ -381,6 +388,7 @@ async function deleteFavoriteRemote(key) {
   const res = await httpDelete(url, { Authorization: `Bearer ${acc.token}` });
   return { ok: res.status && res.status < 400 };
 }
+let lastPushedFavSig = '';
 async function pullFavoritesMerge() {
   const acc = readAccount();
   if (!acc.serverBase || !acc.token) return { ok: false, error: 'Not logged in' };
@@ -406,10 +414,14 @@ async function pullFavoritesMerge() {
   for (const it of localOnly) merged.set(it.key, it);
   const next = [...merged.values()];
   saveFavorites(next);
-  if (localOnly.length) {
+  // Anything the server declines to keep — a tombstoned key, say — is still missing from
+  // the next pull, so re-pushing the same set only earns another echo and another pull.
+  const pushSig = localOnly.map((it) => it.key).sort().join('\n');
+  if (localOnly.length && pushSig !== lastPushedFavSig) {
     try {
       const pushUrl = `${acc.serverBase.replace(/\/+$/,'')}/api/favourites/bulk_upsert`;
       await httpPostJson(pushUrl, { items: localOnly }, { Authorization: `Bearer ${acc.token}` });
+      lastPushedFavSig = pushSig;
     } catch (e) {
       console.warn('[sync] failed to push local-only favourites', String(e?.message || e));
     }
