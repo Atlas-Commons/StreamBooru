@@ -40,7 +40,11 @@ function applyMediaResponseHeaders(res, upstream, { download = false, filename =
   if (!upstream.headers.get('content-type')) {
     res.setHeader('Content-Type', 'application/octet-stream');
   }
-  res.setHeader('Cache-Control', 'public, max-age=86400');
+  // Booru media paths are content addressed — the bytes behind a hash never change — so
+  // a shared cache can hold them far longer than a browser needs to, and neither has any
+  // reason to revalidate. Every hit served from a CDN edge is a hit the source site and
+  // this server both avoid.
+  res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=2592000, immutable');
   if (download) res.setHeader('Content-Disposition', contentDisposition(filename));
 }
 

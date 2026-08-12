@@ -655,8 +655,10 @@ app.get('/api/stream', (req, res) => {
 /* ---------- Media proxy (images + video) ---------- */
 
 async function proxyMediaRequest(req, res, { download = false, filename = '' } = {}) {
+  // The allow-origin value never depends on the request, and a Vary on anything but
+  // Accept-Encoding stops a CDN caching the response at all — which is the whole point
+  // of putting one in front of a media proxy.
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Vary', 'Origin');
   try {
     const url = String(req.query.url || '');
     if (!url || !isProxyAllowed(url)) return res.status(400).send('Bad url');
