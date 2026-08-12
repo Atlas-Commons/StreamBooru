@@ -67,7 +67,6 @@ jobs:
           curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
           apt-get install -y -qq nodejs
       - run: npm ci
-      - run: npm i -D electron-builder@^24
       - run: npx electron-builder --publish=never --config electron-builder.yml --linux deb tar.gz
       - run: cp docs/INSTALL.md dist/INSTALL.md || true
       - name: Collect artifacts
@@ -116,7 +115,6 @@ jobs:
           curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
           apt-get install -y -qq nodejs
       - run: npm ci
-      - run: npm i -D electron-builder@^24
       - name: Install Wine and NSIS
         run: |
           set -euo pipefail
